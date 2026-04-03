@@ -33,33 +33,7 @@ An AI-powered factory operations platform for automated process monitoring, anom
 | **Agent** | Conversational AI for factory data analysis using registered MCPs as tools |
 | **Skill Designer** | AI-powered skill builder for custom monitoring logic |
 
-## Project Structure
-
-```
-fastapi_backend_refactored/
-├── fastapi_backend_service/    # FastAPI backend
-│   ├── app/
-│   │   ├── models/             # SQLAlchemy ORM models
-│   │   ├── repositories/       # DB access layer
-│   │   ├── routers/            # FastAPI route handlers
-│   │   ├── schemas/            # Pydantic request/response schemas
-│   │   └── services/           # Business logic
-│   ├── alembic/                # DB migrations
-│   ├── main.py                 # App entry point + startup seeding
-│   └── requirements.txt
-├── ontology_simulator/         # Factory process simulator (data source)
-│   └── frontend/               # Simulator UI (Next.js)
-└── docker-compose.yml
-
-aiops-app/                      # Main frontend (Next.js 15)
-├── src/
-│   ├── app/
-│   │   ├── admin/              # Admin pages (skills, patrols, MCPs, alarms)
-│   │   ├── api/admin/          # Next.js API routes (proxy to FastAPI)
-│   │   └── operations/         # Operations pages (AlarmCenter, Agent)
-│   └── components/
-└── package.json
-```
+---
 
 ## Quick Start
 
@@ -69,103 +43,164 @@ aiops-app/                      # Main frontend (Next.js 15)
 - Node.js 20+
 - An Anthropic API key **or** a running Ollama instance
 
-### 1. Backend
+---
+
+### Step 1 — Clone the repo
+
+```bash
+git clone https://github.com/gillggx/aiops-platform.git
+cd aiops-platform
+```
+
+Everything below assumes you are in this `aiops-platform/` directory.
+
+---
+
+### Step 2 — Backend
 
 ```bash
 cd fastapi_backend_service
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
 
-# Configure environment
+Create your `.env` file:
+
+```bash
 cp ../.env.example .env
-# Edit .env — at minimum set:
-#   ANTHROPIC_API_KEY=sk-ant-...   (or OLLAMA_* if using local LLM)
-#   SECRET_KEY=<random 32-char hex>
-#   INTERNAL_API_TOKEN=<shared token with frontend>
+```
 
+Open `.env` and set at minimum:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...          # or configure OLLAMA_* below
+SECRET_KEY=<run: openssl rand -hex 32>
+INTERNAL_API_TOKEN=any-shared-secret
+```
+
+Start the backend:
+
+```bash
 uvicorn main:app --reload --port 8000
 ```
 
-**First startup is fully automatic — no manual DB setup needed:**
+**Verify:** open [http://localhost:8000/docs](http://localhost:8000/docs) — you should see the Swagger UI.
 
-| Step | What happens |
-|---|---|
-| `init_db()` | Creates all tables via SQLAlchemy `create_all` |
-| `_safe_add_columns()` | Applies idempotent column migrations (safe to re-run) |
-| `_seed_data()` | Seeds default users, event types, system MCPs |
+> First startup auto-creates the database, runs migrations, and seeds default data — no `alembic upgrade` needed.
+>
+> Default login: **admin / admin**
 
-Default accounts created on first run:
+---
 
-| Username | Password | Role |
-|---|---|---|
-| `admin` | `admin` | superuser |
+### Step 3 — Frontend
 
-> **New laptop / clean DB:** just start the server — everything initialises automatically. No `alembic upgrade` needed for SQLite dev setup.
-
-### 2. Frontend
+Open a new terminal tab, from the repo root:
 
 ```bash
 cd aiops-app
 npm install
-
-# Configure environment
-cat > .env.local << 'EOF'
-FASTAPI_BASE_URL=http://localhost:8000
-INTERNAL_API_TOKEN=change-me-internal-token
-NEXT_PUBLIC_APP_TITLE=AIOps Platform
-EOF
-
-npm run dev   # http://localhost:3000
 ```
 
-> `INTERNAL_API_TOKEN` must match the value set in the backend `.env`.
+Create your `.env.local` file:
 
-### 3. OntologySimulator (optional — factory process demo data)
+```bash
+cat > .env.local << 'EOF'
+FASTAPI_BASE_URL=http://localhost:8000
+INTERNAL_API_TOKEN=any-shared-secret
+NEXT_PUBLIC_APP_TITLE=AIOps Platform
+EOF
+```
+
+> `INTERNAL_API_TOKEN` must match the value you set in the backend `.env`.
+
+Start the frontend:
+
+```bash
+npm run dev
+```
+
+**Verify:** open [http://localhost:3000](http://localhost:3000) and log in with **admin / admin**.
+
+---
+
+### Step 4 — OntologySimulator (optional — factory demo data)
+
+Open a new terminal tab, from the repo root:
 
 ```bash
 cd ontology_simulator/frontend
-npm install && npm run dev   # http://localhost:8012
+npm install && npm run dev
 ```
 
-Once running, go to Admin → System MCPs and verify `get_process_context` and `get_process_history` point to `http://localhost:8012`.
+**Verify:** open [http://localhost:8012](http://localhost:8012).
 
-## Environment Variables
+Then in the AIOps UI go to **Admin → System MCPs** and confirm `get_process_context` and `get_process_history` point to `http://localhost:8012`.
 
-See [`.env.example`](.env.example) for the full list. Key variables:
+---
 
-| Variable | Description |
-|---|---|
-| `DATABASE_URL` | SQLite (dev) or PostgreSQL (prod) |
-| `SECRET_KEY` | JWT signing key — change in production |
-| `LLM_PROVIDER` | `anthropic` or `ollama` |
-| `ANTHROPIC_API_KEY` | Required when `LLM_PROVIDER=anthropic` |
-| `ONTOLOGY_SIM_URL` | OntologySimulator base URL (default: `http://localhost:8012`) |
-| `INTERNAL_API_TOKEN` | Shared token between Next.js proxy and FastAPI |
+### Step 5 — Docker (alternative to steps 2–4)
 
-## Tech Stack
-
-**Backend**
-- FastAPI 0.115 + SQLAlchemy 2.0 (async)
-- SQLite (dev) / PostgreSQL (prod) via aiosqlite / asyncpg
-- Alembic migrations
-- Claude (Anthropic) or Ollama for LLM features
-
-**Frontend**
-- Next.js 15 + React 19
-- Inline styles (no Tailwind dependency)
-- SSE streaming for AI generation console
-
-## Docker
+If you prefer to run everything in containers:
 
 ```bash
-cp .env.example .env   # then edit .env
+cp .env.example .env   # then edit .env as in Step 2
 docker compose up
 ```
 
-Services: `backend` (port 8000) · `frontend` (port 3000) · `simulator` (port 8012)
+| Service | URL |
+|---|---|
+| Backend | http://localhost:8000 |
+| Frontend | http://localhost:3000 |
+| Simulator | http://localhost:8012 |
+
+---
+
+## Environment Variables
+
+Full list in [`.env.example`](.env.example). Key variables:
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | SQLite (default, dev) or PostgreSQL (prod) |
+| `SECRET_KEY` | JWT signing key — generate with `openssl rand -hex 32` |
+| `LLM_PROVIDER` | `anthropic` or `ollama` |
+| `ANTHROPIC_API_KEY` | Required when `LLM_PROVIDER=anthropic` |
+| `OLLAMA_BASE_URL` | Required when `LLM_PROVIDER=ollama` (e.g. `http://localhost:11434/v1`) |
+| `OLLAMA_MODEL` | Ollama model name (e.g. `qwen3:8b`) |
+| `ONTOLOGY_SIM_URL` | OntologySimulator base URL (default: `http://localhost:8012`) |
+| `INTERNAL_API_TOKEN` | Shared token between Next.js proxy and FastAPI |
+
+---
+
+## Project Structure
+
+```
+aiops-platform/
+├── fastapi_backend_service/    # FastAPI backend
+│   ├── app/
+│   │   ├── models/             # SQLAlchemy ORM models
+│   │   ├── repositories/       # DB access layer
+│   │   ├── routers/            # FastAPI route handlers
+│   │   ├── schemas/            # Pydantic request/response schemas
+│   │   └── services/           # Business logic
+│   ├── main.py                 # App entry point + startup seeding
+│   └── requirements.txt
+├── aiops-app/                  # Main frontend (Next.js 15)
+│   └── src/app/
+│       ├── admin/              # Admin pages (skills, patrols, MCPs, alarms)
+│       ├── api/admin/          # Next.js API routes (proxy to FastAPI)
+│       └── operations/         # AlarmCenter, Agent
+├── ontology_simulator/         # Factory process simulator (data source)
+│   └── frontend/               # Simulator UI (Next.js)
+└── docker-compose.yml
+```
+
+## Tech Stack
+
+**Backend** — FastAPI 0.115 · SQLAlchemy 2.0 (async) · SQLite / PostgreSQL · Alembic · Claude / Ollama
+
+**Frontend** — Next.js 15 · React 19 · SSE streaming for AI generation console
 
 ## API Docs
 
-With the backend running, visit:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+With the backend running: [http://localhost:8000/docs](http://localhost:8000/docs)

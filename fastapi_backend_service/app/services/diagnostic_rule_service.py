@@ -82,6 +82,34 @@ RULE: When user description mentions 圖/chart/trend/趨勢/管制圖/分佈, yo
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
+def _extract_json(text: str) -> str:
+    """Robustly extract the first JSON object from LLM output.
+
+    Handles:
+    - <think>...</think> blocks (Qwen3 / DeepSeek thinking mode)
+    - Text before/after the JSON object
+    - Markdown fences (```json ... ```)
+    """
+    # Strip <think>...</think> blocks first
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Strip markdown fences
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    # Find the outermost {...} block
+    start = text.find("{")
+    if start == -1:
+        return text
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    # Fallback: return from first { to end (may still fail, but gives better error context)
+    return text[start:]
+
+
 def _to_response(obj) -> DiagnosticRuleResponse:
     def _j(s):
         try:
@@ -109,6 +137,30 @@ def _to_response(obj) -> DiagnosticRuleResponse:
 
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _sanitize_code(code: str) -> str:
+    """Insert 'pass' into any empty block body (else/except/finally/for/while/with/if).
+
+    LLMs occasionally generate `else:` or `except:` with no following body,
+    which raises SyntaxError. This post-processor detects those and adds `pass`.
+    """
+    lines = code.splitlines()
+    result = []
+    block_keywords = re.compile(r"^(\s*)(else|elif\b.*|except\b.*|finally|for\b.*|while\b.*|with\b.*|if\b.*):\s*$")
+    for i, line in enumerate(lines):
+        result.append(line)
+        if block_keywords.match(line):
+            # Check if next non-empty line is at deeper indentation
+            current_indent = len(line) - len(line.lstrip())
+            next_code_line = None
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip():
+                    next_code_line = lines[j]
+                    break
+            if next_code_line is None or (len(next_code_line) - len(next_code_line.lstrip())) <= current_indent:
+                result.append(" " * (current_indent + 4) + "pass")
+    return "\n".join(result)
 
 
 def _shape_str(data: Any) -> str:
@@ -403,7 +455,7 @@ Required output format:
             messages=[{"role": "user", "content": f"Diagnostic rule description:\n{description}"}],
             max_tokens=1024,
         )
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+        raw = _extract_json(resp.text)
         return json.loads(raw)
 
     # ── Private: Phase 2a — Step Planner ──────────────────────────────────────
@@ -449,7 +501,7 @@ Required output format (NO python_code — plan only):
             messages=[{"role": "user", "content": f"Diagnostic rule:\n{description}"}],
             max_tokens=1024,
         )
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+        raw = _extract_json(resp.text)
         if not raw:
             raise ValueError("Phase 2a LLM returned empty response")
         return json.loads(raw)
@@ -498,6 +550,8 @@ Special function (awaitable, no import needed):
 
 Forbidden: import, open(), exec(), eval(), os, sys, subprocess, trigger_alarm
 INPUT vars: equipment_id, lot_id, step, event_time, _input
+CRITICAL: Every if/else/for/while/try/except block MUST have a body — never leave a block header with no statements.
+Use simple consistent variable names without step prefixes (e.g. `apc_data_list`, not `step2_apc_data_list`).
 
 All steps overview (for variable naming consistency):
 {steps_overview}
@@ -512,9 +566,10 @@ All steps overview (for variable naming consistency):
                     f"[{step['step_id']}] {step['nl_segment']}"
                 ),
             }],
-            max_tokens=2048,
+            max_tokens=3072 if is_last else 2048,
         )
-        code = re.sub(r"^```(?:python)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+        code = re.sub(r"<think>.*?</think>", "", resp.text, flags=re.DOTALL)
+        code = re.sub(r"^```(?:python)?\s*|\s*```$", "", code.strip(), flags=re.MULTILINE).strip()
         if not code:
             raise ValueError(f"LLM returned empty code for step {step['step_id']}")
-        return code
+        return _sanitize_code(code)
