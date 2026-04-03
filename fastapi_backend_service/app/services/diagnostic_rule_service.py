@@ -143,6 +143,36 @@ def _resolve_mock_params(params_template: dict) -> dict:
     return result
 
 
+def _build_confirmed_section(mcp_calls: List[dict], sample_responses: Dict[str, Any]) -> str:
+    """Build the 'Confirmed MCPs' context block shared by Phase 2a and 2b prompts."""
+    lines = ["Confirmed MCPs to use (execute in this order):"]
+    for i, mc in enumerate(mcp_calls, 1):
+        mcp_name = mc["mcp_name"]
+        purpose = mc.get("purpose", "")
+        tmpl = mc.get("params_template", {})
+
+        sample = sample_responses.get(mcp_name)
+        if not sample:
+            if mcp_name == "get_process_context":
+                obj_name = tmpl.get("objectName", "SPC")
+                fb = _FALLBACK_SAMPLES.get("get_process_context", {})
+                sample = fb.get(obj_name) or fb.get("SPC")
+            else:
+                sample = _FALLBACK_SAMPLES.get(mcp_name)
+
+        sample_str = ""
+        if sample:
+            preview = sample[:2] if isinstance(sample, list) else sample
+            note = "  ← fallback example" if not sample_responses.get(mcp_name) else ""
+            sample_str = f"\n   Sample{note}: {json.dumps(preview, ensure_ascii=False)[:500]}"
+
+        lines.append(
+            f"{i}. execute_mcp('{mcp_name}', {json.dumps(tmpl, ensure_ascii=False)})\n"
+            f"   Purpose: {purpose}{sample_str}"
+        )
+    return "\n".join(lines)
+
+
 # ── Service ────────────────────────────────────────────────────────────────────
 
 
@@ -250,27 +280,76 @@ class DiagnosticRuleService:
                 sample_responses[mcp_name] = {}
                 yield _sse({"type": "fetch", "mcp_name": mcp_name, "status": "error", "error": str(exc)})
 
-        # ── Phase 2: Code Generator ───────────────────────────────────────────
-        yield _sse({"type": "phase", "phase": 2, "message": "生成分析邏輯..."})
+        # ── Phase 2a: Step Planner ────────────────────────────────────────────
+        yield _sse({"type": "phase", "phase": "2a", "message": "規劃分析步驟..."})
 
         try:
-            parsed = await self._generate_code(
-                body.auto_check_description, mcp_calls, sample_responses
-            )
-            steps = parsed.get("steps_mapping", [])
-            proposal = parsed.get("proposal_steps", [s.get("nl_segment", "") for s in steps])
-            yield _sse({
-                "type": "done",
-                "result": {
-                    "proposal_steps": proposal,
-                    "steps_mapping": steps,
-                    "input_schema": parsed.get("input_schema", []),
-                    "output_schema": parsed.get("output_schema", []),
-                },
-            })
+            step_plan = await self._plan_steps(body.auto_check_description, mcp_calls, sample_responses)
         except Exception as exc:
-            logger.warning("DR Phase 2 failed: %s", exc)
-            yield _sse({"type": "error", "error": f"Phase 2 失敗: {exc}"})
+            logger.warning("DR Phase 2a failed: %s", exc)
+            yield _sse({"type": "error", "error": f"Phase 2a 失敗: {exc}"})
+            return
+
+        raw_steps: List[dict] = step_plan.get("steps", [])
+        input_schema: List[dict] = step_plan.get("input_schema", [])
+        output_schema: List[dict] = step_plan.get("output_schema", [])
+        proposal_steps: List[str] = step_plan.get(
+            "proposal_steps", [s.get("nl_segment", "") for s in raw_steps]
+        )
+
+        if not raw_steps:
+            yield _sse({"type": "error", "error": "Phase 2a 未能規劃出分析步驟，請修改描述後重試"})
+            return
+
+        yield _sse({
+            "type": "step_plan",
+            "steps": raw_steps,
+            "input_schema": input_schema,
+            "output_schema": output_schema,
+            "total": len(raw_steps),
+        })
+        for s in raw_steps:
+            yield _sse({"type": "log", "message": f"  → {s['step_id']}: {s['nl_segment']}"})
+
+        # ── Phase 2b: Per-Step Code Generation ───────────────────────────────
+        yield _sse({"type": "phase", "phase": "2b", "message": f"生成每步程式碼 (共 {len(raw_steps)} 步)..."})
+
+        confirmed_section = _build_confirmed_section(mcp_calls, sample_responses)
+        assembled_steps: List[dict] = []
+
+        for i, raw_step in enumerate(raw_steps):
+            step_id = raw_step["step_id"]
+            nl_segment = raw_step.get("nl_segment", "")
+            yield _sse({"type": "step_code", "status": "generating", "step_id": step_id, "nl_segment": nl_segment})
+            try:
+                python_code = await self._generate_step_code(
+                    body.auto_check_description,
+                    confirmed_section,
+                    raw_steps,
+                    i,
+                    output_schema,
+                )
+                assembled_steps.append({
+                    "step_id": step_id,
+                    "nl_segment": nl_segment,
+                    "python_code": python_code,
+                })
+                yield _sse({"type": "step_code", "status": "done", "step_id": step_id})
+            except Exception as exc:
+                logger.warning("DR Phase 2b step '%s' failed: %s", step_id, exc)
+                yield _sse({"type": "step_code", "status": "error", "step_id": step_id, "error": str(exc)})
+                yield _sse({"type": "error", "error": f"Phase 2b 步驟 {step_id} 失敗: {exc}"})
+                return
+
+        yield _sse({
+            "type": "done",
+            "result": {
+                "proposal_steps": proposal_steps,
+                "steps_mapping": assembled_steps,
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+            },
+        })
 
     async def generate_steps(self, body: GenerateRuleStepsRequest) -> GenerateRuleStepsResponse:
         """Non-streaming wrapper — collects stream events and returns final result."""
@@ -327,72 +406,34 @@ Required output format:
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
         return json.loads(raw)
 
-    # ── Private: Phase 2 — Code Generator ─────────────────────────────────────
+    # ── Private: Phase 2a — Step Planner ──────────────────────────────────────
 
-    async def _generate_code(
+    async def _plan_steps(
         self,
         description: str,
         mcp_calls: List[dict],
         sample_responses: Dict[str, Any],
     ) -> dict:
-        # Build confirmed MCP section with actual (or fallback) sample data
-        # so LLM knows exact field names and can write correct code
-        confirmed_section = "Confirmed MCPs to use (execute in this order):\n"
-        for i, mc in enumerate(mcp_calls, 1):
-            mcp_name = mc["mcp_name"]
-            purpose = mc.get("purpose", "")
-            tmpl = mc.get("params_template", {})
-
-            # Prefer real sample; fall back to static example when sim returned empty
-            sample = sample_responses.get(mcp_name)
-            if not sample:
-                # pick the right fallback key for get_process_context based on objectName
-                if mcp_name == "get_process_context":
-                    obj_name = tmpl.get("objectName", "SPC")
-                    fb = _FALLBACK_SAMPLES.get("get_process_context", {})
-                    sample = fb.get(obj_name) or fb.get("SPC")
-                else:
-                    sample = _FALLBACK_SAMPLES.get(mcp_name)
-
-            sample_str = ""
-            if sample:
-                preview = sample[:2] if isinstance(sample, list) else sample
-                note = "  ← fallback example (simulator had no data)" if not sample_responses.get(mcp_name) else ""
-                sample_str = f"\n   Sample response{note}: {json.dumps(preview, ensure_ascii=False)[:500]}"
-
-            confirmed_section += (
-                f"{i}. execute_mcp('{mcp_name}', {json.dumps(tmpl, ensure_ascii=False)})\n"
-                f"   Purpose: {purpose}{sample_str}\n"
-            )
+        """Phase 2a: plan step structure only — no python_code. Very short response."""
+        confirmed_section = _build_confirmed_section(mcp_calls, sample_responses)
 
         system_prompt = f"""\
-You are a factory AI monitoring expert. Convert natural language diagnostic logic into structured Python steps.
-CRITICAL: Output ONLY a valid JSON object. No explanation, no markdown fences, nothing outside JSON.
+You are a factory AI monitoring expert. Plan the diagnostic analysis steps.
+Output ONLY valid JSON. No explanation, no markdown fences.
 
 {confirmed_section}
-Special functions (call only, no import):
-- await execute_mcp(mcp_name: str, params: dict) -> Any
 
-Forbidden: import, open(), exec(), eval(), os, sys, subprocess, trigger_alarm
-
-INPUT: The skill receives a dict. Access keys like: equipment_id = _input.get("equipment_id")
-Also available as top-level vars: equipment_id, lot_id, step, event_time
-
-OUTPUT: The LAST step MUST assign _findings:
-_findings = {{
-    "condition_met": <bool>,
-    "summary": "<one sentence conclusion>",
-    "outputs": {{"<output_schema key>": <value>, ...}},
-    "impacted_lots": [<lot_id>] if condition_met else []
-}}
+INPUT vars available in Python scope: equipment_id, lot_id, step, event_time, _input
 
 {_OUTPUT_SCHEMA_GUIDE}
 
-Required output format (JSON only):
+Required output format (NO python_code — plan only):
 {{
-  "proposal_steps": ["Plain English step 1", "Plain English step 2"],
-  "steps_mapping": [
-    {{"step_id": "step1", "nl_segment": "...", "python_code": "..."}}
+  "proposal_steps": ["Plain English step 1", "Plain English step 2", ...],
+  "steps": [
+    {{"step_id": "step1", "nl_segment": "取機台最近 N 次製程清單"}},
+    {{"step_id": "step2", "nl_segment": "逐筆取各批次 APC 參數"}},
+    {{"step_id": "step3", "nl_segment": "計算偏移趨勢並判斷 OOC 條件，輸出診斷結果"}}
   ],
   "input_schema": [
     {{"key": "equipment_id", "type": "string", "required": true, "description": "目標機台 ID"}}
@@ -405,11 +446,75 @@ Required output format (JSON only):
 
         resp = await self._llm.create(
             system=system_prompt,
-            messages=[{"role": "user", "content": f"Diagnostic rule (natural language):\n{description}"}],
-            max_tokens=4096,
+            messages=[{"role": "user", "content": f"Diagnostic rule:\n{description}"}],
+            max_tokens=1024,
         )
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
         if not raw:
-            logger.warning("DR Phase 2 LLM returned empty response. Prompt length: %d chars", len(system_prompt))
-            raise ValueError("LLM returned empty response — prompt may be too long or model refused")
+            raise ValueError("Phase 2a LLM returned empty response")
         return json.loads(raw)
+
+    # ── Private: Phase 2b — Per-Step Code Generator ────────────────────────────
+
+    async def _generate_step_code(
+        self,
+        description: str,
+        confirmed_section: str,
+        all_steps: List[dict],
+        step_index: int,
+        output_schema: List[dict],
+    ) -> str:
+        """Phase 2b: generate raw python_code for one step. Output is code only, not JSON."""
+        step = all_steps[step_index]
+        is_last = step_index == len(all_steps) - 1
+
+        steps_overview = "\n".join(
+            f"  {i + 1}. [{s['step_id']}] {s['nl_segment']}"
+            for i, s in enumerate(all_steps)
+        )
+
+        last_step_note = ""
+        if is_last:
+            out_keys = ", ".join(f'"{s["key"]}": <value>' for s in output_schema)
+            last_step_note = f"""
+CRITICAL — this is the LAST step. End with exactly:
+_findings = {{
+    "condition_met": <bool>,
+    "summary": "<one sentence conclusion in Chinese>",
+    "outputs": {{{out_keys}}},
+    "impacted_lots": [<lot_id_str>] if condition_met else []
+}}"""
+
+        system_prompt = f"""\
+You are a factory AI expert. Write Python code for ONE diagnostic step.
+Output raw Python code ONLY — no JSON, no markdown fences, no explanation.
+
+Rule description: {description}
+
+{confirmed_section}
+
+Special function (awaitable, no import needed):
+  await execute_mcp(mcp_name: str, params: dict) -> Any
+
+Forbidden: import, open(), exec(), eval(), os, sys, subprocess, trigger_alarm
+INPUT vars: equipment_id, lot_id, step, event_time, _input
+
+All steps overview (for variable naming consistency):
+{steps_overview}
+{last_step_note}"""
+
+        resp = await self._llm.create(
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Write Python code for step {step_index + 1}/{len(all_steps)}: "
+                    f"[{step['step_id']}] {step['nl_segment']}"
+                ),
+            }],
+            max_tokens=2048,
+        )
+        code = re.sub(r"^```(?:python)?\s*|\s*```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+        if not code:
+            raise ValueError(f"LLM returned empty code for step {step['step_id']}")
+        return code
