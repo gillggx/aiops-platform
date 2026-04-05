@@ -770,6 +770,14 @@ async def _seed_data() -> None:
                     existing.roles = desired
                     logger.info("Updated roles for user: %s", u["username"])
 
+        # Commit users so subsequent seed steps can reference them safely
+        # (Postgres enforces FKs strictly; SQLite historically had them off).
+        try:
+            await db.commit()
+        except Exception as _user_commit_err:
+            logger.warning("User seed commit failed: %s", _user_commit_err)
+            await db.rollback()
+
         # ── 0b. Optional cleanup: set env var RESET_TO_ONTOLOGY_ONLY=true to trigger ──
         # Removes all custom MCPs, Skills, RoutineChecks, GeneratedEvents, and legacy
         # system MCPs — leaving only the canonical _ONTOLOGY_SYSTEM_MCPS.
@@ -865,35 +873,46 @@ async def _seed_data() -> None:
             logger.warning("OntologySim MCP seeding skipped: %s", _seed_err2)
             await db.rollback()
 
-        # ── 1d. Seed system shared memories (user_id=0) ───────────────────────
+        # ── 1d. Seed system shared memories ────────────────────────────────────
+        # System memories are attached to the admin user (first seeded user).
+        # SQLite historically allowed user_id=0 (FKs off by default); Postgres
+        # enforces FKs strictly, so we anchor these on a real user row.
         try:
             from app.models.agent_memory import AgentMemoryModel as _MemModel
             import json as _json2
-            for mem_spec in _SYSTEM_MEMORIES:
-                tags_json = _json2.dumps(mem_spec["tags"], ensure_ascii=False)
-                # Check by content prefix (first 80 chars) to avoid duplicates
-                content_prefix = mem_spec["content"][:80]
-                result = await db.execute(
-                    select(_MemModel).where(
-                        _MemModel.user_id == 0,
-                        _MemModel.content.like(content_prefix[:60] + "%"),
+
+            # Find the admin user to own system memories
+            _admin_res = await db.execute(
+                select(UserModel).where(UserModel.username == "admin")
+            )
+            _admin = _admin_res.scalar_one_or_none()
+            if _admin is None:
+                logger.warning("System memory seeding skipped: admin user not found")
+            else:
+                _sys_user_id = _admin.id
+                for mem_spec in _SYSTEM_MEMORIES:
+                    tags_json = _json2.dumps(mem_spec["tags"], ensure_ascii=False)
+                    content_prefix = mem_spec["content"][:80]
+                    result = await db.execute(
+                        select(_MemModel).where(
+                            _MemModel.user_id == _sys_user_id,
+                            _MemModel.content.like(content_prefix[:60] + "%"),
+                        )
                     )
-                )
-                existing_mem = result.scalar_one_or_none()
-                if existing_mem is None:
-                    db.add(_MemModel(
-                        user_id=0,
-                        content=mem_spec["content"],
-                        source=mem_spec["source"],
-                        embedding=tags_json,  # store tags as embedding field (text-based)
-                        ref_id=None,
-                    ))
-                    logger.info("Seeded system memory: %s...", mem_spec["content"][:50])
-                else:
-                    # Update content in case it changed
-                    existing_mem.content = mem_spec["content"]
-                    existing_mem.embedding = tags_json
-                    logger.info("Updated system memory: %s...", mem_spec["content"][:50])
+                    existing_mem = result.scalar_one_or_none()
+                    if existing_mem is None:
+                        db.add(_MemModel(
+                            user_id=_sys_user_id,
+                            content=mem_spec["content"],
+                            source=mem_spec["source"],
+                            embedding=tags_json,
+                            ref_id=None,
+                        ))
+                        logger.info("Seeded system memory: %s...", mem_spec["content"][:50])
+                    else:
+                        existing_mem.content = mem_spec["content"]
+                        existing_mem.embedding = tags_json
+                        logger.info("Updated system memory: %s...", mem_spec["content"][:50])
             await db.commit()
         except Exception as _mem_err:
             logger.warning("System memory seeding skipped: %s", _mem_err)

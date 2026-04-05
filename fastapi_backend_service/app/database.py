@@ -149,17 +149,29 @@ async def _rebuild_v18_tables(conn) -> None:
     Checks whether ``skill_definitions`` still carries the pre-v18 ``mcp_ids``
     column.  If it does, both ``skill_definitions`` and ``generated_events`` are
     dropped so that ``create_all`` can recreate them with the new v18 schema.
+
+    Dialect-aware: uses PRAGMA on SQLite, information_schema on Postgres.
     """
     import logging
 
     import sqlalchemy as sa
 
+    dialect = conn.dialect.name
     try:
-        result = await conn.execute(sa.text("PRAGMA table_info(skill_definitions)"))
-        columns = {row[1] for row in result.fetchall()}
+        if dialect == "sqlite":
+            result = await conn.execute(sa.text("PRAGMA table_info(skill_definitions)"))
+            columns = {row[1] for row in result.fetchall()}
+        else:
+            # Postgres / other: use information_schema
+            result = await conn.execute(sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'skill_definitions'"
+            ))
+            columns = {row[0] for row in result.fetchall()}
+
         if "mcp_ids" in columns:
-            await conn.execute(sa.text("DROP TABLE IF EXISTS skill_definitions"))
-            await conn.execute(sa.text("DROP TABLE IF EXISTS generated_events"))
+            await conn.execute(sa.text("DROP TABLE IF EXISTS skill_definitions CASCADE"))
+            await conn.execute(sa.text("DROP TABLE IF EXISTS generated_events CASCADE"))
             logging.getLogger(__name__).info(
                 "v18 migration: dropped old skill_definitions + generated_events tables"
             )
@@ -202,11 +214,20 @@ async def init_db() -> None:
 
 
 async def _safe_add_columns(conn) -> None:
-    """Add missing columns to existing tables (idempotent, SQLite-compatible)."""
+    """Add missing columns to existing tables (idempotent, dialect-aware).
+
+    On Postgres with a fresh DB, create_all() already builds the correct
+    schema from ORM models, so these no-op (column already exists). On
+    legacy SQLite instances, these patch older schemas up to current.
+    """
+    dialect = conn.dialect.name
+    # Boolean column type differs between dialects
+    bool_default_true = "BOOLEAN NOT NULL DEFAULT TRUE" if dialect != "sqlite" else "INTEGER NOT NULL DEFAULT 1"
+
     migrations = [
         # v18: extend event_types with source and is_active
         ("event_types", "source", "TEXT NOT NULL DEFAULT 'simulator'"),
-        ("event_types", "is_active", "INTEGER NOT NULL DEFAULT 1"),
+        ("event_types", "is_active", bool_default_true),
         # Keep legacy migrations
         ("routine_checks", "trigger_event_id", "INTEGER"),
         # v2.0: execution_logs — add auto_patrol_id, widen triggered_by
@@ -225,12 +246,17 @@ async def _safe_add_columns(conn) -> None:
         # skill_definitions: which auto_patrol alarm triggers this Diagnostic Rule
         ("skill_definitions", "trigger_patrol_id", "INTEGER REFERENCES auto_patrols(id) ON DELETE SET NULL"),
     ]
+    import sqlalchemy as sa
     for table, column, col_type in migrations:
         try:
-            await conn.execute(
-                __import__("sqlalchemy").text(
+            # Use "IF NOT EXISTS" on Postgres for true idempotency
+            if dialect != "sqlite":
+                await conn.execute(sa.text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+                ))
+            else:
+                await conn.execute(sa.text(
                     f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-                )
-            )
+                ))
         except Exception:
             pass  # Column already exists — safe to ignore

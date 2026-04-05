@@ -58,6 +58,17 @@ Everything below assumes you are in this `aiops-platform/` directory.
 
 ### Step 2 — Backend
 
+**Prerequisite — PostgreSQL + pgvector** (macOS via Homebrew):
+
+```bash
+brew install postgresql@17 pgvector
+brew services start postgresql@17
+createdb aiops
+psql aiops -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+Backend setup:
+
 ```bash
 cd fastapi_backend_service
 python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
@@ -73,6 +84,7 @@ cp ../.env.example .env
 Open `.env` and set at minimum:
 
 ```env
+DATABASE_URL="postgresql+asyncpg://<user>@localhost:5432/aiops"
 ANTHROPIC_API_KEY=sk-ant-...          # or configure OLLAMA_* below
 SECRET_KEY=<run: openssl rand -hex 32>
 INTERNAL_API_TOKEN=any-shared-secret
@@ -86,9 +98,30 @@ uvicorn main:app --reload --port 8000
 
 **Verify:** open [http://localhost:8000/docs](http://localhost:8000/docs) — you should see the Swagger UI.
 
-> First startup auto-creates the database, runs migrations, and seeds default data — no `alembic upgrade` needed.
+> First startup auto-creates all tables via SQLAlchemy `create_all()` and seeds default users, system MCPs, and event types — no `alembic upgrade` needed for a fresh DB.
 >
 > Default login: **admin / admin**
+
+**Migrating from SQLite?** If you have an existing `dev.db` to transfer:
+
+```bash
+# 1. Export SQLite → JSONL dumps
+../.venv/bin/python scripts/migration/export_sqlite.py
+
+# 2. Build empty Postgres schema
+DATABASE_URL="postgresql+asyncpg://<user>@localhost:5432/aiops" \
+    ../.venv/bin/python -c "import asyncio, main; from app.database import init_db; asyncio.run(init_db())"
+
+# 3. Import data
+DATABASE_URL="postgresql+asyncpg://<user>@localhost:5432/aiops" \
+    ../.venv/bin/python scripts/migration/import_postgres.py
+
+# 4. Stamp alembic head
+PYTHONPATH="$PWD" DATABASE_URL="postgresql+asyncpg://<user>@localhost:5432/aiops" \
+    ../.venv/bin/alembic stamp head
+```
+
+Scripts handle FK cycles (skill ↔ auto_patrol) and legacy SQLite quirks (user_id=0 system memories).
 
 ---
 
