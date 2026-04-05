@@ -104,6 +104,15 @@ class Config(BaseSettings):
         default="ollama",
         description="API key for Ollama (any non-empty string works; set to real key for vLLM/remote)",
     )
+    # ── Embedding service (Phase 1: Agentic Memory) ───────────────────────
+    EMBEDDING_BASE_URL: str = Field(
+        default="http://localhost:11434",
+        description="Base URL of the embedding provider (Ollama native API, no /v1)",
+    )
+    EMBEDDING_MODEL: str = Field(
+        default="bge-m3",
+        description="Embedding model name (bge-m3 → 1024-dim vectors)",
+    )
     LLM_MAX_TOKENS_DIAGNOSTIC: int = Field(
         default=4096,
         description="Max output tokens for the diagnostic agent loop",

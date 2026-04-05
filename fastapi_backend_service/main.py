@@ -62,6 +62,8 @@ from app.routers import (
 from app.routers.agent_chat_router import router as agent_chat_router
 from app.routers.agent_memory_router import router as agent_memory_router
 from app.routers.agent_preference_router import router as agent_preference_router
+# Phase 1: Reflective experience memory
+from app.routers.experience_memory import router as experience_memory_router
 
 settings = get_settings()
 _SIM = settings.ONTOLOGY_SIM_URL  # e.g. "http://localhost:8001"
@@ -1087,6 +1089,8 @@ app.include_router(actions_router, prefix=_PREFIX)           # /api/v1/actions/.
 app.include_router(auto_patrols_router, prefix=_PREFIX)      # /api/v1/auto-patrols/...
 # v2.0 Diagnostic Rules
 app.include_router(diagnostic_rules_router, prefix=_PREFIX)  # /api/v1/diagnostic-rules/...
+# Phase 1: Reflective experience memory
+app.include_router(experience_memory_router, prefix=_PREFIX)  # /api/v1/experience-memory/...
 
 # ---------------------------------------------------------------------------
 # Global Exception Handlers

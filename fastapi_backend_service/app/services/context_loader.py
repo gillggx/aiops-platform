@@ -14,7 +14,7 @@ v14: Returns List[Dict] (Anthropic content blocks) for Prompt Caching support.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -187,12 +187,16 @@ _DEFAULT_SOUL = """\
     ✅ 正確：patch_mcp 成功後 → navigate(target="mcp-edit", id=<mcp_id>, message="已修改完成，為您打開編輯器確認")
     ✅ 正確：用戶說「帶我去改 MCP 3」→ navigate(target="mcp-edit", id=3, message="為您導覽至 MCP 編輯器")
 
-11. [自我學習] 當你成功完成一個多步驟查詢，可以將「正確的 API 使用模式」存入長期記憶：
-    ✅ 存記憶時機：成功用 N 個工具完成一個複雜查詢，且該模式具有重複性
-    ✅ 記憶格式：「查詢類型 [xxx] 的正確做法：Step1→Step2→...，關鍵：[重要發現]」
-    ✅ 存記憶指令：呼叫 save_memory(content="...", tags=["api_pattern", "系統MCP名稱"])
-    ⚠️ 存記憶前先確認：若本次結果與已召回的舊記憶相互矛盾（例如舊記憶的步驟導致錯誤），
-       先呼叫 delete_memory 刪除舊記憶，再儲存新的正確做法，避免矛盾記憶共存干擾未來判斷。
+11. [反思型記憶 — Phase 1]
+    系統會自動在背景把每次成功的多步驟任務萃取成抽象經驗存入 <dynamic_memory>，
+    你不需要主動呼叫 save_memory。**你的責任是正確地引用記憶**：
+    ✅ 若你決定採用 <dynamic_memory> 中某條記憶的策略，必須在回答中加上 `[memory:<id>]` 標記
+       範例：「根據 [memory:3]，先用 list_recent_events(since='7d') 取得完整樣本...」
+    ✅ 引用標記讓系統能正確追蹤哪條記憶有效（成功 +1）、哪條誤導（失敗 -2）
+    ⚠️ 若 <dynamic_memory> 中的記憶與當前情境矛盾（例如工具名不對、策略過時），直接忽略不要引用。
+       被忽略的記憶會在累積失敗後自動 STALE。
+    ⚠️ 記憶的 confidence_score 顯示在每條記憶後面（例如 "信心:7/10"）。
+       低於 4 分的記憶要特別警覺、寧可忽略。
 
 12. [用戶指示學習] 當用戶明確指示你記住某件事時，立刻儲存並確認：
     觸發詞：「記住這個」「以後都這樣做」「這是我們的 SOP」「記一下」「下次要」
@@ -303,6 +307,9 @@ class ContextLoader:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
         self._memory_svc = AgentMemoryService(db)
+        # Phase 1: new reflective memory system (pgvector + health scoring)
+        from app.services.experience_memory_service import ExperienceMemoryService
+        self._exp_memory_svc = ExperienceMemoryService(db)
 
     async def build(
         self,
@@ -323,22 +330,63 @@ class ContextLoader:
         soul = await self._load_soul(user_id)
         pref = await self._load_preference(user_id)
 
-        # v14.1: Pre-filtered memory retrieval using task_context metadata
+        # ── Phase 1: Reflective Memory (primary) ──────────────────────────
+        # Hybrid-filter retrieve: semantic + health + freshness.
+        # Each result is wrapped with a prompt-injection guard that includes
+        # the memory id so the Agent can attribute its decisions back via
+        # [memory:<id>] tags for the feedback loop.
         _tc = task_context or {}
-        if query or _tc.get("task_type"):
-            memories, filter_meta = await self._memory_svc.search_with_metadata(
-                user_id=user_id,
-                query=query or "",
-                top_k=top_k_memories,
-                task_type=_tc.get("task_type"),
-                data_subject=_tc.get("data_subject"),
-                tool_name=_tc.get("tool_name"),
-            )
-        else:
-            memories, filter_meta = [], {"strategy": "skipped"}
+        exp_memories: List[Tuple[Any, float]] = []
+        if query:
+            try:
+                exp_memories = await self._exp_memory_svc.retrieve(
+                    user_id=user_id,
+                    query=query,
+                    top_k=top_k_memories,
+                )
+            except Exception as exc:
+                logger.warning("Experience memory retrieve failed: %s", exc)
+                exp_memories = []
 
-        rag_lines = [f"- {m.content}" for m in memories]
+        # ── Legacy keyword-based memories (fallback for back-compat) ──────
+        # Only queried when no experience memories hit — eventually removable.
+        if not exp_memories and (query or _tc.get("task_type")):
+            try:
+                memories, filter_meta = await self._memory_svc.search_with_metadata(
+                    user_id=user_id,
+                    query=query or "",
+                    top_k=top_k_memories,
+                    task_type=_tc.get("task_type"),
+                    data_subject=_tc.get("data_subject"),
+                    tool_name=_tc.get("tool_name"),
+                )
+            except Exception:
+                memories, filter_meta = [], {"strategy": "error"}
+        else:
+            memories, filter_meta = [], {"strategy": "experience_memory"}
+
+        # Build the prompt-visible RAG block
+        rag_lines: List[str] = []
+        for mem, sim in exp_memories:
+            # Prompt injection guard — tells the model this is advisory, not fact,
+            # and prefixes with [memory:<id>] so the model can cite it.
+            rag_lines.append(
+                f"- [memory:{mem.id}] (信心:{mem.confidence_score}/10, "
+                f"使用:{mem.use_count}, 相似度:{sim:.2f})\n"
+                f"  意圖: {mem.intent_summary}\n"
+                f"  策略: {mem.abstract_action}"
+            )
+        for mem in memories:  # legacy fallback
+            rag_lines.append(f"- (legacy) {mem.content}")
+
         rag_block = "\n".join(rag_lines) if rag_lines else "(無相關歷史記憶)"
+        if exp_memories:
+            rag_block = (
+                "⚠️ 以下為過往經驗記憶 (advisory)。這不是絕對真理，請根據當前情境獨立判斷。\n"
+                "若引用某條記憶來做決定，請在回答中加上 `[memory:<id>]` 標記以便追蹤。\n"
+                "若發現記憶與現實矛盾，請忽略該條並考慮標記為錯誤。\n\n"
+                + rag_block
+            )
 
         # ── Block 1: Soul + output rules (stable → cache) ─────────────────────
         stable_text = f"""<soul>
@@ -385,15 +433,29 @@ class ContextLoader:
             },
         ]
 
+        # Build rag_hits from both paths for the SSE event
+        from app.services.experience_memory_service import ExperienceMemoryService as _ExpSvc
+        rag_hits: List[Dict[str, Any]] = []
+        for mem, sim in exp_memories:
+            hit = _ExpSvc.to_dict(mem)
+            hit["similarity"] = round(sim, 3)
+            hit["_source"] = "experience"
+            rag_hits.append(hit)
+        for mem in memories:
+            hit = AgentMemoryService.to_dict(mem)
+            hit["_source"] = "legacy"
+            rag_hits.append(hit)
+
         meta: Dict[str, Any] = {
             "soul_preview": soul[:120] + ("..." if len(soul) > 120 else ""),
             "pref_summary": (pref[:80] + "...") if pref and len(pref) > 80 else (pref or "(無)"),
-            "rag_hits": [AgentMemoryService.to_dict(m) for m in memories],
-            "rag_count": len(memories),
-            "cache_blocks": 1,  # number of cached blocks
+            "rag_hits": rag_hits,
+            "rag_count": len(rag_hits),
+            "exp_memory_count": len(exp_memories),  # for observability
+            "cache_blocks": 1,
             "has_canvas_overrides": bool(canvas_overrides),
-            "memory_filter": filter_meta,          # v14.1: pre-filter details for context_load SSE
-            "task_context": _tc,                   # v14.1: extracted task context
+            "memory_filter": filter_meta,
+            "task_context": _tc,
         }
 
         return system_blocks, meta

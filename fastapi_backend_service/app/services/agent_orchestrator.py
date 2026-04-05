@@ -494,6 +494,27 @@ _ID_PATTERNS = [
     re.compile(r"\bRCP-\d{3}\b"),       # RCP-018
 ]
 
+# Phase 1: Memory attribution — agent wraps cited memories as [memory:<id>]
+# so we know which memories influenced this decision and can score them.
+_MEMORY_CITATION_PATTERN = re.compile(r"\[memory:(\d+)\]")
+
+
+def _extract_memory_citations(text: str) -> List[int]:
+    """Return list of unique memory ids cited in the text via [memory:<id>] tags."""
+    if not text:
+        return []
+    seen: set = set()
+    ids: List[int] = []
+    for m in _MEMORY_CITATION_PATTERN.finditer(text):
+        try:
+            mid = int(m.group(1))
+            if mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
+        except ValueError:
+            continue
+    return ids
+
 
 def _detect_id_hallucinations(
     final_text: str,
@@ -1078,6 +1099,69 @@ class AgentOrchestrator:
     ) -> AsyncIterator[Dict[str, Any]]:
         return self._run_impl(message, session_id)
 
+    async def _run_memory_lifecycle_background(
+        self,
+        user_query: str,
+        final_text: str,
+        tool_chain: List[Dict[str, Any]],
+        cited_memory_ids: List[int],
+        session_id: Optional[str],
+    ) -> None:
+        """Fire-and-forget: score cited memories + abstract new experience memory.
+
+        Runs in an isolated DB session since the request-scoped session is
+        closed by the time this runs. Any exceptions are swallowed (logged
+        only) because this must not break the user-facing flow.
+        """
+        from app.database import AsyncSessionLocal
+        from app.services.experience_memory_service import ExperienceMemoryService
+        from app.services.memory_abstraction import abstract_memory
+
+        try:
+            async with AsyncSessionLocal() as bg_db:
+                svc = ExperienceMemoryService(bg_db)
+
+                # 1. Feedback: memories cited in the answer → +success
+                # (If the agent used them and we got this far, the task succeeded)
+                for mem_id in cited_memory_ids:
+                    try:
+                        await svc.record_feedback(mem_id, outcome="success")
+                    except Exception as exc:
+                        logger.warning(
+                            "Memory feedback failed for id=%d: %s", mem_id, exc
+                        )
+
+                # 2. LLM abstraction: turn this successful interaction into
+                # a new (intent, action) pair (or skip if not worth saving)
+                try:
+                    abstraction = await abstract_memory(
+                        llm_client=self._llm,
+                        user_query=user_query,
+                        agent_final_text=final_text,
+                        tool_chain=tool_chain,
+                    )
+                except Exception as exc:
+                    logger.warning("Memory abstraction errored: %s", exc)
+                    abstraction = None
+
+                if abstraction is not None:
+                    try:
+                        await svc.write(
+                            user_id=self._user_id,
+                            intent_summary=abstraction["intent_summary"],
+                            abstract_action=abstraction["abstract_action"],
+                            source="auto",
+                            source_session_id=session_id,
+                        )
+                        logger.info(
+                            "Memory lifecycle: wrote new experience memory "
+                            "for user=%d", self._user_id
+                        )
+                    except Exception as exc:
+                        logger.warning("Memory write failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Memory lifecycle background task failed: %s", exc)
+
     async def _run_reflection(
         self,
         final_text: str,
@@ -1147,18 +1231,19 @@ class AgentOrchestrator:
         )
 
         try:
-            settings = get_settings()
             resp = await asyncio.wait_for(
-                self._llm.messages.create(
-                    model=settings.LLM_MODEL,
-                    max_tokens=800,
+                self._llm.create(
+                    system="你是數據品質審查員。",
                     messages=[{"role": "user", "content": reflection_prompt}],
+                    max_tokens=800,
                 ),
                 timeout=12.0,
             )
-            raw = resp.content[0].text.strip() if resp.content else "{}"
+            raw = (resp.text or "").strip()
             # Strip markdown code fences if present
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+            if not raw:
+                return {"pass": True}
             result = json.loads(raw)
             return result
         except Exception as exc:
@@ -1194,6 +1279,14 @@ class AgentOrchestrator:
         session_id, history, cumulative_tokens = await self._load_session(session_id)
         context_meta["history_turns"] = len(history) // 2
         context_meta["cumulative_tokens"] = cumulative_tokens
+
+        # Phase 1: track retrieved experience memory ids for feedback fallback
+        # (if agent fails to cite them via [memory:X] tag, we still credit them
+        # with use/success counts because they did influence the context)
+        _retrieved_memory_ids: List[int] = [
+            int(h["id"]) for h in context_meta.get("rag_hits", [])
+            if h.get("_source") == "experience" and isinstance(h.get("id"), int)
+        ]
 
         yield _stage_event(1, "complete")
         yield {"type": "context_load", **context_meta}
@@ -1707,33 +1800,32 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.warning("Preference memory write failed: %s", exc)
 
-        # Phase B: Success pattern memory — write after successful multi-tool synthesis
+        # ── Phase 1 Memory Lifecycle: feedback + abstraction ────────────────
+        # 1. Extract [memory:<id>] tags from final_text → record_feedback(success)
+        #    on cited memories.
+        # 2. If this was a meaningful multi-tool task → schedule async LLM
+        #    abstraction + write new experience memory.
+        # Both run via asyncio.create_task (fire-and-forget, doesn't block SSE).
         if _tools_used and len(_tools_used) >= 2 and final_text:
-            try:
-                tool_chain = " → ".join(
-                    f"{t['tool']}({t['mcp_name']})" if t.get("mcp_name") else t["tool"]
-                    for t in _tools_used
-                )
-                pattern_content = (
-                    f"【成功模式】{message[:60]} | 工具鏈：{tool_chain} | "
-                    f"結果摘要：{final_text[:100]}"
-                )
-                pattern_mem = await self._memory_svc.write(
-                    user_id=self._user_id,
-                    content=pattern_content,
-                    source="success_pattern",
-                    task_type="api_pattern",
-                    tool_name=_tools_used[0]["tool"],
-                )
-                yield {
-                    "type": "memory_write",
-                    "source": "success_pattern",
-                    "memory_type": "pattern",
-                    "content": pattern_content[:100],
-                    "memory_id": pattern_mem.id,
-                }
-            except Exception as exc:
-                logger.warning("Success pattern memory write failed: %s", exc)
+            cited_memory_ids = _extract_memory_citations(final_text)
+            # Fallback (decision 4 "B+A"): if agent didn't cite anything but
+            # RAG did retrieve memories, credit the retrieved ones as "passively used"
+            feedback_memory_ids = cited_memory_ids or _retrieved_memory_ids
+            asyncio.create_task(self._run_memory_lifecycle_background(
+                user_query=message,
+                final_text=final_text,
+                tool_chain=list(_tools_used),
+                cited_memory_ids=feedback_memory_ids,
+                session_id=session_id,
+            ))
+            yield {
+                "type": "memory_write",
+                "source": "experience_lifecycle_scheduled",
+                "cited_memory_ids": cited_memory_ids,
+                "feedback_memory_ids": feedback_memory_ids,
+                "feedback_source": "citation" if cited_memory_ids else "passive_retrieval",
+                "tool_count": len(_tools_used),
+            }
 
         yield _stage_event(6, "complete")
 

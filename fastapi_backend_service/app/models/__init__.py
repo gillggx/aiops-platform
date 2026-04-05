@@ -11,6 +11,7 @@ from app.models.system_parameter import SystemParameterModel
 from app.models.routine_check import RoutineCheckModel
 from app.models.agent_draft import AgentDraftModel
 from app.models.agent_memory import AgentMemoryModel
+from app.models.agent_experience_memory import AgentExperienceMemoryModel
 from app.models.user_preference import UserPreferenceModel
 from app.models.agent_session import AgentSessionModel
 from app.models.mock_data_source import MockDataSourceModel
@@ -34,6 +35,7 @@ __all__ = [
     "RoutineCheckModel",
     "AgentDraftModel",
     "AgentMemoryModel",
+    "AgentExperienceMemoryModel",
     "UserPreferenceModel",
     "AgentSessionModel",
     "MockDataSourceModel",

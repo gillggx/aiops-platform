@@ -13,6 +13,7 @@ import type { AIOpsReportContract } from "aiops-contract";
 const STUDIO_ITEMS = [
   { href: "/admin/skills",       label: "Diagnostic Rules", icon: "🔧" },
   { href: "/admin/auto-patrols", label: "Auto-Patrols",     icon: "🔍" },
+  { href: "/admin/memories",     label: "Agent Memories",   icon: "🧠" },
 ];
 
 const SYSTEM_ITEMS = [
