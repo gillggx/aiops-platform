@@ -75,6 +75,84 @@ _MAX_LIMIT: Dict[str, int] = {
 }
 
 
+# ── Since-param alias normalization ────────────────────────────────────────
+# Agent likes to invent parameter names ('since_hours=24', 'hours=24', etc.).
+# Instead of silently ignoring these and falling back to default, translate
+# well-known variants to the canonical 'since' form.
+_SINCE_NUMERIC_UNITS: Dict[str, str] = {
+    # key name in params → duration unit suffix
+    "since_hours": "h",
+    "since_days":  "d",
+    "since_weeks": "w",
+    "hours":       "h",
+    "days":        "d",
+    "weeks":       "w",
+}
+
+# String-valued aliases — agent passes these shortcut words/phrases
+_SINCE_STRING_ALIASES: Dict[str, str] = {
+    "today":       "24h",
+    "last_day":    "24h",
+    "yesterday":   "48h",
+    "this_week":   "7d",
+    "last_week":   "7d",
+    "week":        "7d",
+    "this_month":  "30d",
+    "last_month":  "30d",
+    "month":       "30d",
+}
+
+
+class SinceParamError(ValueError):
+    """Raised when the caller provides an invalid `since` param that can't be repaired."""
+    pass
+
+
+def _normalize_since_aliases(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold well-known since-param aliases into canonical `since="<N><unit>"`.
+
+    Supported inputs:
+        since="24h" / "7d" / "14d" / "30d" / "2w"     → canonical, passthrough
+        since_hours=24 / since_days=7 / since_weeks=2  → since="24h" / "7d" / "2w"
+        hours=24 / days=7 / weeks=2                    → same
+        timeRange="today" / "week" / "month"           → "24h" / "7d" / "30d"
+        since="today" / "week"                         → string alias expanded
+
+    Mutates a copy of params (never the original). Removes alias keys after folding.
+    """
+    if not isinstance(params, dict):
+        return params
+    result = dict(params)
+
+    # Numeric aliases (since_hours=24 → since="24h")
+    for alias_key, unit in _SINCE_NUMERIC_UNITS.items():
+        if alias_key in result:
+            raw_val = result.pop(alias_key)
+            try:
+                n = int(raw_val)
+                if n <= 0:
+                    continue
+                result.setdefault("since", f"{n}{unit}")
+            except (TypeError, ValueError):
+                continue
+
+    # String alias expansion (timeRange="today" or since="today")
+    for alias_key in ("timeRange", "time_range"):
+        if alias_key in result:
+            raw = result.pop(alias_key)
+            if isinstance(raw, str):
+                mapped = _SINCE_STRING_ALIASES.get(raw.strip().lower())
+                if mapped:
+                    result.setdefault("since", mapped)
+
+    if "since" in result and isinstance(result["since"], str):
+        key = result["since"].strip().lower()
+        if key in _SINCE_STRING_ALIASES:
+            result["since"] = _SINCE_STRING_ALIASES[key]
+
+    return result
+
+
 def _parse_duration(s: str) -> Optional[timedelta]:
     """Parse duration strings like '24h', '7d', '30d', '2w' → timedelta.
 
@@ -125,18 +203,23 @@ async def _resolve_since_param(
     """Transform `since` param → `start_time` ISO timestamp for the simulator.
 
     Flow:
-      1. If caller already passed `start_time`, respect it (explicit wins).
-      2. Use `params["since"]` or MCP-specific default from _DEFAULT_SINCE.
+      1. Normalize alias params (since_hours=24 → since="24h").
+      2. If caller already passed `start_time`, respect it (explicit wins).
       3. Apply default limit if missing.
-      4. Fetch simulator's latest event time.
-      5. Compute cutoff = latest - duration and inject as `start_time`.
+      4. Use `params["since"]` or MCP-specific default from _DEFAULT_SINCE.
+      5. Fetch simulator's latest event time.
+      6. Compute cutoff = latest - duration and inject as `start_time`.
+
+    Raises SinceParamError if caller passed an explicit but un-parseable `since`
+    (e.g. since="1x"). Default values are never rejected.
 
     Mutates a copy of params (never the original).
     """
     if mcp_name not in _TIME_WINDOW_MCPS:
         return params
 
-    params = dict(params)  # shallow copy
+    # Fold aliases first so downstream logic only sees canonical 'since'
+    params = _normalize_since_aliases(params)
 
     # Apply default limit if missing; clamp to per-MCP max (simulator API limit)
     max_lim = _MAX_LIMIT.get(mcp_name, 500)
@@ -153,11 +236,21 @@ async def _resolve_since_param(
         params.pop("since", None)
         return params
 
-    # Determine effective since
-    since_raw = params.pop("since", None) or _DEFAULT_SINCE.get(mcp_name, "7d")
+    # Determine effective since — distinguish explicit vs default for error handling
+    agent_supplied_since = params.pop("since", None)
+    since_raw = agent_supplied_since or _DEFAULT_SINCE.get(mcp_name, "7d")
     duration = _parse_duration(since_raw)
+
     if duration is None:
-        logger.warning("MCP '%s': invalid since='%s', skipping time-window filter", mcp_name, since_raw)
+        # If the agent explicitly passed a bad value, reject loudly so LLM can fix it.
+        # If we fell back to default and that's somehow bad, log but don't crash.
+        if agent_supplied_since is not None:
+            raise SinceParamError(
+                f"Invalid 'since' parameter: {agent_supplied_since!r}. "
+                f"Must be a string like '24h', '7d', '14d', '30d' or '2w'. "
+                f"Examples: since='24h' for today, since='7d' for the past week."
+            )
+        logger.warning("MCP '%s': default since='%s' invalid, skipping time-window filter", mcp_name, since_raw)
         return params
 
     latest = await _fetch_simulator_latest_time(sim_base)
@@ -918,9 +1011,12 @@ class MCPDefinitionService:
 
             # ── Time-window MCPs: resolve `since` → `start_time` ─────────────
             if obj.name in _TIME_WINDOW_MCPS:
-                params_dict = await _resolve_since_param(
-                    obj.name, params_dict, get_settings().ONTOLOGY_SIM_URL
-                )
+                try:
+                    params_dict = await _resolve_since_param(
+                        obj.name, params_dict, get_settings().ONTOLOGY_SIM_URL
+                    )
+                except SinceParamError as exc:
+                    return MCPTryRunResponse(success=False, error=f"INVALID_SINCE: {exc}")
 
             # ── get_process_context: auto-resolve eventTime ───────────────────
             if obj.name == "get_process_context":

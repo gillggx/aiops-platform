@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.mcp_definition import MCPDefinitionModel
+from app.models.skill_definition import SkillDefinitionModel
 from app.models.system_parameter import SystemParameterModel
 from app.models.user_preference import UserPreferenceModel
 from app.services.agent_memory_service import AgentMemoryService
@@ -46,13 +47,28 @@ _DEFAULT_SOUL = """\
 
 1.15 【時間窗使用鐵律 — 時序類 MCP】
     list_recent_events / get_process_history 已採用「時間窗」設計，不是筆數導向：
-    - 預設 since='7d' → 回傳過去 7 天所有事件（上限 limit=2000）
+    - 預設 since='7d' → 回傳過去 7 天所有事件（上限 limit=500）
     - 問「今天」或「最近 24 小時」→ 明確傳 since='24h'
     - 問「最近一週」或一般「最近」→ 不帶 since，用預設 7d
     - 問「本月」或「30 天」→ 傳 since='30d'
     - 統計類問題（例如「今天最差的機台」「OOC 排行」）→ 必須帶足夠時間窗
+    ⚠️ since 參數格式鐵律（違反會回 INVALID_SINCE 錯誤）：
+       ✅ 正確：since='24h' / since='7d' / since='14d' / since='30d'（字串！）
+       ❌ 錯誤：since_hours=24 / hours=24 / since=24 / timeRange='today'
     ⚠️ 樣本量 < 5 筆時禁止講百分比（例如 1/1=100% 或 2/3=66% 都無統計意義）
     ⚠️ 看到樣本量很小時，先檢查是否用了太短的時間窗，考慮擴大 since
+
+1.16 【歷史事件鐵律 — 禁止用 get_process_context 覆寫 ground truth】
+    從 list_recent_events / get_process_history 拿到的事件清單中的欄位：
+      eventTime, lotID, toolID, step, spc_status, fdc_class
+    是該事件當時的 ground truth，不可被其他 API 覆寫。
+    ❌ 禁止：拿到事件後呼叫 get_process_context 「驗證」或「查實際 toolID」
+    ❌ 禁止：看到 get_process_context 回的 toolID 跟 list_recent_events 不同就「糾正」
+       → 事實是你用 get_process_context 沒帶 eventTime，拿到的是後來的 snapshot，
+         不是當時的事件；是你用錯 API，不是 list_recent_events 錯了。
+    ✅ 正確：要查某筆歷史事件的 SPC/DC 細節時，get_process_context 必須帶原事件的 eventTime
+    ✅ 正確：要統計 toolID 分布、OOC 率 → 直接用 list_recent_events 回傳的欄位即可，
+       完全不需要呼叫 get_process_context 做二次驗證
 
 1.2 【CHART 鐵律 — 圖表只能來自工具，絕對禁止 LLM 自行生成】
     ⛔ 所有圖表必須透過 tool 產出，只允許兩條路徑：
@@ -84,10 +100,12 @@ _DEFAULT_SOUL = """\
    ════════════════════════════════════════════════
    ★ 優先考慮：精準 Skill 匹配（有 SOP 就照 SOP）
    ════════════════════════════════════════════════
-   ① 不管是「診斷」、「分析」、「視覺化呈現」還是「標準查詢」，先 list_skills 或 search_catalog 確認是否有符合的 Skill。
-   ② 若找到高度吻合的 Skill → 優先選擇 execute_skill，Skill 已封裝完整邏輯（撈資料 + 處理 + 產圖 + 回結論）。
+   ① 不管是「診斷」、「分析」、「視覺化呈現」還是「標準查詢」，先查 <skill_catalog>（已在 system prompt 中注入）。
+      不需要再呼叫 list_skills — catalog 清單已經在你眼前。
+   ② 若找到高度吻合的 Skill → 優先選擇 execute_skill(skill_id=<id>, params={...})。
+      Skill 已封裝完整邏輯（撈資料 + 處理 + 產圖 + 回結論），一次呼叫完成。
    ⚠️ Skill 不僅限於診斷用途。畫 chart、跑分析、呈現標準圖表都應優先用 Skill。
-      例如：「看 SPC chart」→ 找「SPC 管制圖呈現」Skill，直接 execute_skill。
+      例如：「看 SPC chart」→ <skill_catalog> 中的「SPC 管制圖呈現」→ 直接 execute_skill。
    ⚠️ Skill 產出的 chart 會自動渲染至使用者畫面（chart_intents 機制）。
       看到 tool result 含 CHART RENDERED 標記時，表示圖已出現，你的任務只是用文字說明結論，禁止再呼叫繪圖工具。
 
@@ -331,13 +349,17 @@ class ContextLoader:
 {_OUTPUT_ROUTING}
 </output_routing_rules>"""
 
-        # ── MCP catalog: inject at Stage 1 so model never guesses IDs ─────────
+        # ── Skill + MCP catalogs: inject at Stage 1 so model never guesses IDs ─────
+        # Skill catalog is placed BEFORE mcp_catalog so agent sees the high-level
+        # abstractions first (work-in-one-call) before falling back to raw MCPs.
+        skill_catalog = await self._load_skill_catalog()
         mcp_catalog = await self._load_mcp_catalog()
 
         # ── Block 2: Dynamic context (changes each turn → no cache) ───────────
         dynamic_parts = [
             f"<user_preference>\n{pref or '(使用者尚未設定個人偏好)'}\n</user_preference>",
             f"<dynamic_memory>\n{rag_block}\n</dynamic_memory>",
+            f"<skill_catalog>\n{skill_catalog}\n</skill_catalog>",
             f"<mcp_catalog>\n{mcp_catalog}\n</mcp_catalog>",
         ]
         if canvas_overrides:
@@ -444,3 +466,57 @@ class ContextLoader:
             system_lines.append(f"| {mcp.id} | {mcp.name} | {desc} | {required_params} |")
 
         return "\n".join(system_lines) if len(system_lines) > 3 else "(目前無可用 System MCP)"
+
+    async def _load_skill_catalog(self) -> str:
+        """Load public Skills list for injection into agent context.
+
+        Skills encapsulate "data + processing + visualization" in one callable unit.
+        Agent should prefer execute_skill over execute_mcp + execute_jit whenever
+        a matching Skill exists — that's why this catalog goes *before* the MCP
+        catalog in the system prompt.
+        """
+        try:
+            result = await self._db.execute(
+                select(SkillDefinitionModel)
+                .where(SkillDefinitionModel.visibility == "public")
+                .where(SkillDefinitionModel.is_active == True)
+                .order_by(SkillDefinitionModel.id)
+            )
+            skills = result.scalars().all()
+        except Exception:
+            logger.debug("_load_skill_catalog failed", exc_info=True)
+            return "(Skill 目錄載入失敗)"
+
+        if not skills:
+            return "(目前無可用 public Skill)"
+
+        import json as _json
+
+        lines = [
+            "## Available Skills（⭐ 優先使用 — 先查此清單再考慮 execute_mcp / execute_jit）",
+            "呼叫方式：execute_skill(skill_id=<id>, params={<input_schema 欄位>})",
+            "",
+            "| id | name | 說明 | 輸入參數 |",
+            "|----|------|------|---------|",
+        ]
+
+        for skill in skills:
+            name = skill.name
+            desc = (skill.description or "")[:120].replace("\n", " ").replace("|", "｜")
+            required_params = ""
+            raw_schema = skill.input_schema
+            if raw_schema:
+                try:
+                    schema = _json.loads(raw_schema) if isinstance(raw_schema, str) else raw_schema
+                    # input_schema can be a list of {key,type,required,...} dicts
+                    if isinstance(schema, list):
+                        req = [f["key"] for f in schema if isinstance(f, dict) and f.get("required")]
+                        required_params = ", ".join(req) if req else "-"
+                    elif isinstance(schema, dict) and "fields" in schema:
+                        req = [f["name"] for f in schema["fields"] if f.get("required")]
+                        required_params = ", ".join(req) if req else "-"
+                except Exception:
+                    required_params = "-"
+            lines.append(f"| {skill.id} | {name} | {desc} | {required_params} |")
+
+        return "\n".join(lines)

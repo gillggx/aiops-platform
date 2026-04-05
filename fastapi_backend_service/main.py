@@ -206,11 +206,19 @@ _ONTOLOGY_SYSTEM_MCPS = [
         "name": "get_process_context",
         "description": (
             "【製程物件快照】給定 targetID + step + objectName，查詢該製程事件的物件快照。\n"
-            "eventTime 由 backend 自動解析，不需填入。\n"
             "objectName: DC（感測器 sensor_01~30）/ SPC（管制圖 charts 含 value/ucl/lcl）/ APC / EC / RECIPE / FDC / OCAP\n"
+            "\n"
+            "⚠️ eventTime 行為鐵律（非常重要）：\n"
+            "  - 若省略 eventTime → 回傳該 targetID+step 最近一次的 snapshot（適合「現在狀態」查詢）\n"
+            "  - 若要查歷史事件（例如從 list_recent_events / get_process_history 拿到的某筆 OOC），\n"
+            "    必須帶入該事件的 eventTime，否則會拿到後來的 snapshot，結論會與原始事件不符\n"
+            "  - 絕對禁止：用 get_process_context 去「驗證」list_recent_events 回傳的 toolID/lotID。\n"
+            "    list_recent_events 的 raw data 是 ground truth，不該被覆寫\n"
+            "\n"
             "使用時機：\n"
-            "  ① 已知 lot_id + step，查詢該批次在某步驟的製程數據或 SPC 結果\n"
-            "  ② 已知 equipment_id（toolID）+ step，查詢該機台在某步驟的最新製程數據"
+            "  ① 已知 lot_id + step，查詢該批次在某步驟的**當前**製程數據或 SPC 結果（省略 eventTime）\n"
+            "  ② 已知 equipment_id（toolID）+ step，查詢該機台在某步驟的最新製程數據（省略 eventTime）\n"
+            "  ③ 從 list_recent_events 拿到某筆歷史 OOC 的細節 → 必須帶該筆的 eventTime"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/context/query",
@@ -222,6 +230,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
                 {"name": "targetID",   "type": "string", "description": "批次 ID（格式 LOT-XXXX，e.g. LOT-0001）或機台 ID（格式 EQP-XX，e.g. EQP-01）", "required": True},
                 {"name": "step",       "type": "string", "description": "步驟代碼，格式 STEP_XXX，e.g. STEP_091",  "required": True},
                 {"name": "objectName", "type": "string", "description": "物件類型（大寫）：DC / SPC / APC / EC / RECIPE / FDC / OCAP", "required": True},
+                {"name": "eventTime",  "type": "string", "description": "事件時間戳 (ISO8601，e.g. 2026-04-05T10:42:26)。查歷史事件時必填，查當前狀態時可省略", "required": False},
             ]
         },
     },
@@ -230,6 +239,10 @@ _ONTOLOGY_SYSTEM_MCPS = [
         "description": (
             "【製程歷史記錄】查詢某台機台（toolID）或某批次（lotID）的製程事件列表。\n"
             "每筆記錄包含：eventTime、lotID、toolID、step、recipeID、spc_status（PASS/OOC）、apcID、fdc_class。\n"
+            "\n"
+            "⚠️ since 參數格式鐵律（違反會回 INVALID_SINCE 錯誤）：\n"
+            "  ✅ 正確：since='24h' / since='7d' / since='14d' / since='30d'（字串！）\n"
+            "  ❌ 錯誤：since_hours=24 / hours=24 / since=24 / timeRange='today'\n"
             "\n"
             "⏰ 時間窗設計：預設 since='7d'（回傳 7 天內事件，上限 500 筆）\n"
             "  - 問「今天的」→ 用 since='24h'\n"
@@ -254,7 +267,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "fields": [
                 {"name": "toolID", "type": "string", "description": "機台 ID（格式 EQP-XX，e.g. EQP-01）；toolID 或 lotID 至少提供一個", "required": False},
                 {"name": "lotID",  "type": "string", "description": "批次 ID（格式 LOT-XXXX，e.g. LOT-0001）；toolID 或 lotID 至少提供一個", "required": False},
-                {"name": "since",  "type": "string",  "description": "時間窗，格式 '24h' | '7d' | '14d' | '30d'。預設 '7d'", "required": False},
+                {"name": "since",  "type": "string",  "description": "⚠️ 字串格式：'24h' | '7d' | '14d' | '30d' | '2w'。禁止使用 since_hours=24 或 hours=24。預設 '7d'", "required": False},
                 {"name": "limit",  "type": "integer", "description": "回傳筆數上限（safety cap），預設 500，最大 500（simulator API 限制）", "required": False},
             ]
         },

@@ -484,6 +484,51 @@ def _result_summary(result: Dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False)[:100]
 
 
+# P3: ID hallucination detection — catches cases where LLM invents lotID/step
+# that never appeared in any tool result. Regex-only, zero LLM cost.
+_ID_PATTERNS = [
+    re.compile(r"\bLOT-\d{4}\b"),       # LOT-0001, LOT-0123
+    re.compile(r"\bSTEP_\d{3}\b"),      # STEP_001, STEP_091
+    re.compile(r"\bEQP-\d{2}\b"),       # EQP-01, EQP-10
+    re.compile(r"\bAPC-\d{3}\b"),       # APC-005, APC-092
+    re.compile(r"\bRCP-\d{3}\b"),       # RCP-018
+]
+
+
+def _detect_id_hallucinations(
+    final_text: str,
+    tools_used: List[Dict[str, Any]],
+) -> List[str]:
+    """Return list of IDs that appear in final_text but not in any tool result.
+
+    Supports LOT-xxxx / STEP_xxx / EQP-xx / APC-xxx / RCP-xxx formats.
+    Returns unique IDs, preserving first-seen order from final_text.
+    """
+    if not final_text or not tools_used:
+        return []
+
+    # Combine all tool result texts into a single haystack (lower-cased for safety)
+    haystack = ""
+    for t in tools_used:
+        rt = t.get("result_text") or ""
+        if isinstance(rt, str):
+            haystack += rt + "\n"
+    if not haystack:
+        return []
+
+    hallucinated: List[str] = []
+    seen: set = set()
+    for pattern in _ID_PATTERNS:
+        for match in pattern.finditer(final_text):
+            ident = match.group(0)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            if ident not in haystack:
+                hallucinated.append(ident)
+    return hallucinated
+
+
 def _notify_chart_rendered(result: Dict[str, Any], chart_intents: List[Dict[str, Any]]) -> None:
     """Inject a strongly-worded notice into tool result telling the LLM that charts
     have already been rendered to the user's screen.
@@ -1056,6 +1101,33 @@ class AgentOrchestrator:
                 "amended_text": "⚠️ 所有工具呼叫均未成功取得資料，無法提供分析。請補充必要的查詢參數後重試。",
             }
 
+        # P3: Deterministic ID hallucination check (runs before LLM reflection).
+        # Faster + more reliable than LLM-based checks for ID-like tokens.
+        hallucinated_ids = _detect_id_hallucinations(final_text, tools_used)
+        if hallucinated_ids:
+            logger.warning(
+                "Self-Critique: detected %d hallucinated IDs in Agent answer: %s",
+                len(hallucinated_ids), hallucinated_ids[:10],
+            )
+            # Amend text: flag each hallucinated ID inline
+            amended = final_text
+            for bad_id in hallucinated_ids:
+                amended = amended.replace(bad_id, f"{bad_id}⚠️[捏造]")
+            return {
+                "pass": False,
+                "issues": [
+                    {"text": bad_id, "reason": f"ID 未在任何工具回傳中出現，疑為捏造"}
+                    for bad_id in hallucinated_ids
+                ],
+                "amended_text": (
+                    amended
+                    + "\n\n⚠️ Self-Critique 警告：以上標記的 ID（"
+                    + ", ".join(hallucinated_ids[:5])
+                    + ("..." if len(hallucinated_ids) > 5 else "")
+                    + "）在本次工具回傳中找不到，可能是 AI 捏造，請以工具原始資料為準。"
+                ),
+            }
+
         tools_summary = ", ".join(
             f"{t['tool']}({t['mcp_name']})" if t.get("mcp_name") else t["tool"]
             for t in tools_used
@@ -1431,12 +1503,18 @@ class AgentOrchestrator:
                             }
 
                     # Phase B: track successful tool calls for success pattern memory
+                    # + raw result text for hallucination detection (P3)
                     if isinstance(result, dict) and result.get("status") == "success":
+                        try:
+                            _result_text = json.dumps(result, ensure_ascii=False, default=str)[:20000]
+                        except Exception:
+                            _result_text = str(result)[:20000]
                         _tools_used.append({
                             "tool": tool_name,
                             "mcp_name": tool_input.get("mcp_name", ""),
                             "params": {k: v for k, v in tool_input.items()
                                        if k not in ("mcp_id", "mcp_name", "python_code", "params")},
+                            "result_text": _result_text,
                         })
 
                     render_card = _build_render_card(tool_name, tool_input, result)

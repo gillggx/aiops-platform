@@ -101,9 +101,21 @@ def build_mcp_executor(db, sim_url: str = "http://localhost:8012") -> Callable:
             resolved = await auto_resolve_process_context_params(resolved, sim_url)
 
         # Time-window MCPs: resolve `since` → `start_time`
-        from app.services.mcp_definition_service import _TIME_WINDOW_MCPS, _resolve_since_param
+        from app.services.mcp_definition_service import (
+            _TIME_WINDOW_MCPS,
+            _resolve_since_param,
+            SinceParamError,
+        )
         if mcp_name in _TIME_WINDOW_MCPS:
-            resolved = await _resolve_since_param(mcp_name, resolved, sim_url)
+            try:
+                resolved = await _resolve_since_param(mcp_name, resolved, sim_url)
+            except SinceParamError as exc:
+                logger.warning("execute_mcp('%s'): %s", mcp_name, exc)
+                return {
+                    "status": "error",
+                    "code": "INVALID_SINCE",
+                    "message": str(exc),
+                }
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
