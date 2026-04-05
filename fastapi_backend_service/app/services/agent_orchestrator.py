@@ -47,6 +47,17 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Phase 2-A: LangSmith tracing — no-op when LANGSMITH_API_KEY is unset.
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):  # type: ignore[no-redef]
+        def _decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return _decorator
+
 from app.config import get_settings
 from app.utils.llm_client import get_llm_client
 from app.models.agent_session import AgentSessionModel
@@ -1250,6 +1261,7 @@ class AgentOrchestrator:
             logger.warning("Self-critique reflection failed (non-blocking): %s", exc)
             return {"pass": True}  # fail open — don't block on reflection error
 
+    @traceable(run_type="chain", name="agent_chat_turn")
     async def _run_impl(
         self,
         message: str,

@@ -9,6 +9,10 @@ aiosqlite==0.20.0        # (legacy — kept for migration scripts only)
 asyncpg==0.30.0          # PostgreSQL async driver
 pgvector>=0.4.0          # pgvector extension support (for Phase 1 memory system)
 
+# ── Observability (Phase 2-A) ─────────────────────────────────────────────────
+langsmith>=0.1.0         # Distributed tracing for agent runs
+langchain-core>=0.3.0    # Required by langsmith @traceable decorator
+
 # ── Data Validation & Settings ────────────────────────────────────────────────
 pydantic[email]==2.10.0
 pydantic-settings==2.6.0

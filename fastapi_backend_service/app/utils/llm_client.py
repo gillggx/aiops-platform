@@ -25,6 +25,19 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+# Phase 2-A: LangSmith tracing — @traceable is a no-op when LANGSMITH_API_KEY
+# is unset, so this is safe to apply unconditionally.
+try:
+    from langsmith import traceable
+except ImportError:  # langsmith not installed → provide a no-op fallback
+    def traceable(*args, **kwargs):  # type: ignore[no-redef]
+        def _decorator(fn):
+            return fn
+        # Support both @traceable and @traceable(...)
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return _decorator
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,6 +144,7 @@ class AnthropicLLMClient(BaseLLMClient):
         self._client = _anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 
+    @traceable(run_type="llm", name="anthropic_create")
     async def create(
         self,
         *,
@@ -310,6 +324,7 @@ class OllamaLLMClient(BaseLLMClient):
 
         return result
 
+    @traceable(run_type="llm", name="ollama_create")
     async def create(
         self,
         *,
