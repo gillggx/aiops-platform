@@ -312,6 +312,18 @@ export default function DiagnosticRulesPage() {
                 addLog(`  ✗ ${event.mcp_name}  ${event.error}`, false);
               }
               break;
+            case "step_plan":
+              addLog(`  規劃 ${event.total} 個步驟`, true);
+              break;
+            case "step_code":
+              if (event.status === "generating") {
+                addLog(`  ⏳ 生成 ${event.step_id} (${event.nl_segment})`);
+              } else if (event.status === "done") {
+                addLog(`  ✓ ${event.step_id}`, true);
+              } else {
+                addLog(`  ✗ ${event.step_id}: ${event.error}`, false);
+              }
+              break;
             case "done": {
               const r = event.result as Record<string, unknown>;
               const steps    = (r.steps_mapping  as StepMapping[]) ?? [];
