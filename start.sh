@@ -42,7 +42,7 @@ fi
 # ── 1. Kill any leftover processes on our ports ───────────────────────────────
 echo ""
 echo "🛑  清除 port 8000 / 8012 / 3000..."
-for PORT in 8000 8012 3000; do
+for PORT in 8000 8001 8012 3000; do
   PIDS=$(lsof -ti :$PORT 2>/dev/null || true)
   if [ -n "$PIDS" ]; then
     echo "    kill $PORT → PID(s): $PIDS"
@@ -73,7 +73,7 @@ echo "🚀  啟動 OntologySimulator (port 8012)..."
 mkdir -p "$REPO_ROOT/logs"
 LOG_ONTO="$REPO_ROOT/logs/ontology_simulator.log"
 cd "$REPO_ROOT/ontology_simulator"
-nohup "$ONTOLOGY_PYTHON" main.py > "$LOG_ONTO" 2>&1 &
+PORT=8012 nohup "$ONTOLOGY_PYTHON" main.py > "$LOG_ONTO" 2>&1 &
 ONTO_PID=$!
 echo "    PID=$ONTO_PID  log=$LOG_ONTO"
 
