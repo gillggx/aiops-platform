@@ -3,23 +3,30 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Topbar } from "@/components/layout/Topbar";
-import { EquipmentNavigator } from "@/components/ontology/EquipmentNavigator";
+// EquipmentNavigator removed from sidebar — now embedded in Dashboard
 import { AICopilot } from "@/components/copilot/AICopilot";
 import { AppProvider, useAppContext } from "@/context/AppContext";
 import type { AIOpsReportContract } from "aiops-contract";
 
 // ── Sidebar nav items ──────────────────────────────────────────────────────────
 
-const STUDIO_ITEMS = [
-  { href: "/admin/skills",       label: "Diagnostic Rules", icon: "🔧" },
-  { href: "/admin/auto-patrols", label: "Auto-Patrols",     icon: "🔍" },
-  { href: "/admin/memories",     label: "Agent Memories",   icon: "🧠" },
+// ── Navigation structure ──────────────────────────────────────────────────────
+
+const OPS_ITEMS = [
+  { href: "/",                   label: "Dashboard",        icon: "📊" },
+  { href: "/alarms",             label: "Alarm Center",     icon: "🔔" },
 ];
 
-const SYSTEM_ITEMS = [
+const KNOWLEDGE_ITEMS = [
+  { href: "/admin/auto-patrols", label: "Auto-Patrols",     icon: "🔍" },
+  { href: "/admin/skills",       label: "Diagnostic Rules", icon: "🔧" },
+];
+
+const ADMIN_ITEMS = [
+  { href: "/system/skills",         label: "Skills",         icon: "⚙️" },
+  { href: "/admin/memories",        label: "Agent Memory",   icon: "🧠" },
   { href: "/system/data-sources",   label: "Data Sources",   icon: "🗄️" },
   { href: "/system/event-registry", label: "Event Registry", icon: "📋" },
-  { href: "/system/skills",         label: "All Skills",     icon: "⚙️" },
 ];
 
 function NavLink({ href, icon, label, active }: {
@@ -56,7 +63,6 @@ function SidebarSection({ title }: { title: string }) {
 
 function ContextualSidebar() {
   const pathname = usePathname();
-  const { selectedEquipment, setSelectedEquipment } = useAppContext();
 
   const sidebarStyle: React.CSSProperties = {
     width: 220, flexShrink: 0,
@@ -70,42 +76,31 @@ function ContextualSidebar() {
     return null;
   }
 
-  if (pathname.startsWith("/admin")) {
-    return (
-      <nav style={sidebarStyle}>
-        <div style={{ padding: "8px", flex: 1 }}>
-          <SidebarSection title="Knowledge Studio" />
-          {STUDIO_ITEMS.map(({ href, label, icon }) => (
-            <NavLink key={href} href={href} icon={icon} label={label}
-              active={pathname.startsWith(href)} />
-          ))}
-        </div>
-      </nav>
-    );
-  }
+  // Unified sidebar for all pages (except topology)
+  const isExact = (href: string) => href === "/" ? pathname === "/" : pathname.startsWith(href);
 
-  if (pathname.startsWith("/system")) {
-    return (
-      <nav style={sidebarStyle}>
-        <div style={{ padding: "8px", flex: 1 }}>
-          <SidebarSection title="System Admin" />
-          {SYSTEM_ITEMS.map(({ href, label, icon }) => (
-            <NavLink key={href} href={href} icon={icon} label={label}
-              active={pathname.startsWith(href)} />
-          ))}
-        </div>
-      </nav>
-    );
-  }
-
-  // Operations Center — equipment navigator
   return (
-    <aside style={sidebarStyle}>
-      <EquipmentNavigator
-        selectedId={selectedEquipment?.equipment_id ?? null}
-        onSelect={(eq) => setSelectedEquipment(eq.equipment_id ? eq : null)}
-      />
-    </aside>
+    <nav style={sidebarStyle}>
+      <div style={{ padding: "8px", flex: 1 }}>
+        <SidebarSection title="Operations Center" />
+        {OPS_ITEMS.map(({ href, label, icon }) => (
+          <NavLink key={href} href={href} icon={icon} label={label}
+            active={isExact(href)} />
+        ))}
+
+        <SidebarSection title="Knowledge Studio" />
+        {KNOWLEDGE_ITEMS.map(({ href, label, icon }) => (
+          <NavLink key={href} href={href} icon={icon} label={label}
+            active={isExact(href)} />
+        ))}
+
+        <SidebarSection title="Admin" />
+        {ADMIN_ITEMS.map(({ href, label, icon }) => (
+          <NavLink key={href} href={href} icon={icon} label={label}
+            active={isExact(href)} />
+        ))}
+      </div>
+    </nav>
   );
 }
 

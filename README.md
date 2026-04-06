@@ -9,13 +9,21 @@
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  aiops-app  (Next.js 15 · React 19)                    Port 3000 │
-│  ┌─────────────────────┐   ┌───────────────────────────────┐    │
-│  │  Operations Center   │   │  Knowledge Studio (Admin)     │    │
-│  │  Alarm Center        │   │  Diagnostic Rules Builder     │    │
-│  │  Agent Chat (Copilot)│   │  Auto-Patrols Manager         │    │
-│  │  Equipment Drill-Down│   │  MCP / Skill Management       │    │
-│  │  Topology View       │   │  Agent Memory Management      │    │
-│  └─────────────────────┘   └───────────────────────────────┘    │
+│  Sidebar       │  Main Content                │ AI Copilot  │
+│  ┌───────────┐ │ ┌────────────┬──────────────┐│             │
+│  │ OPS CENTER│ │ │ Alarm List │ Equipment    ││  Agent Chat │
+│  │ Dashboard │ │ │ (展開詳情)  │ Overview     ││  SSE Stream │
+│  │           │ │ │ + Findings │ KPI + Grid   ││             │
+│  │ KNOWLEDGE │ │ └────────────┴──────────────┘│             │
+│  │ Auto-Patrol│ │ Quick Diagnostics            │             │
+│  │ Diag Rules│ │                               │             │
+│  │           │ │                               │             │
+│  │ ADMIN     │ │                               │             │
+│  │ Skills    │ │                               │             │
+│  │ Memory    │ │                               │             │
+│  │ DataSrc   │ │                               │             │
+│  │ Events    │ │                               │             │
+│  └───────────┘ │                               │             │
 │                  │ REST / SSE                                      │
 │                  │ AIOps Report Contract (共同語言)                │
 └──────────────────┬───────────────────────────────────────────────┘

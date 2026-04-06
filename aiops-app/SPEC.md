@@ -27,36 +27,56 @@ AIOps 平台的 **Frontend 應用層**。同時扮演兩個角色：
 | Contract Types | aiops-contract (local) | `file:../aiops-contract/typescript` |
 | AI SDK | @anthropic-ai/sdk | 0.80 |
 
-## 3. 頁面結構
+## 3. Navigation & 頁面結構
 
-### 3.1 Operations Center（預設）
+### 3.0 Sidebar Navigation
+
+```
+OPERATIONS CENTER
+  └── Dashboard            /
+
+KNOWLEDGE STUDIO
+  ├── Auto-Patrols         /admin/auto-patrols
+  └── Diagnostic Rules     /admin/skills
+
+ADMIN
+  ├── Skills               /system/skills
+  ├── Agent Memory         /admin/memories
+  ├── Data Sources         /system/data-sources
+  └── Event Registry       /system/event-registry
+```
+
+### 3.1 Operations Center
 
 | Route | Page | 說明 |
 |-------|------|------|
-| `/` | Home | 雙 Tab：Alarm Center（告警中心）+ Equipment Overview（設備總覽） |
-| `/events` | Events | 全廠事件記錄，15 秒自動刷新，右側 Copilot |
-| `/lots` | Lots | 批次追蹤，flow history + DC/SPC 資料，右側 Copilot |
-| `/topology` | Topology | 九類製程物件拓撲圖（LOT/TOOL/RECIPE/APC/DC/SPC/EC/FDC/OCAP） |
+| `/` | Dashboard | 單頁 Dashboard — 左右兩 card（告警 + 設備總覽）+ Quick Diagnostics |
+
+Dashboard layout：
+- **左 card**：最近關鍵告警 — severity 統計 + alarm list（點擊展開 trigger + diagnostic findings）
+- **右 card**：設備總覽 — KPI（稼動率/運行中/告警/維護）+ equipment grid
+- **底部**：Quick Diagnostics 快捷按鈕 → 觸發 AI Copilot
+
+隱藏路由（不在 sidebar，Agent handoff 用）：
+- `/events` — 全廠事件記錄
+- `/lots` — 批次追蹤
+- `/topology` — 製程物件拓撲圖
 
 ### 3.2 Knowledge Studio（/admin）
 
 | Route | Page | 說明 |
 |-------|------|------|
-| `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成） |
 | `/admin/auto-patrols` | Auto-Patrols | 自動巡檢排程管理 |
-| `/admin/mcps` | MCP Catalog | MCP 瀏覽與編輯 |
-| `/admin/memories` | Agent Memories | 長期記憶管理（approve / reject） |
-| `/admin/event-types` | Event Types | 事件類型登錄 |
-| `/admin/automation/scripts` | Scripts | 腳本版本管理（draft → active → archived） |
-| `/admin/automation/cron-jobs` | Cron Jobs | 排程 Cron 管理 |
+| `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成） |
 
-### 3.3 System Admin（/system）
+### 3.3 Admin
 
 | Route | Page | 說明 |
 |-------|------|------|
+| `/system/skills` | Skills | 全 Skill 總覽 + detail review（Steps / Schema / Metadata） |
+| `/admin/memories` | Agent Memory | 長期記憶管理（approve / reject） |
 | `/system/data-sources` | Data Sources | System MCP 管理（endpoint_url / input_schema / sample fetch） |
 | `/system/event-registry` | Event Registry | 事件登錄與 NATS 監控 |
-| `/system/skills` | All Skills | 全 Skill 總覽 + detail review（Steps / Schema / Metadata） |
 
 ## 4. 核心 Components
 
@@ -64,10 +84,9 @@ AIOps 平台的 **Frontend 應用層**。同時扮演兩個角色：
 
 | Component | 說明 |
 |-----------|------|
-| `AppShell.tsx` | 頂層 layout — Topbar + Contextual Sidebar + Main + AI Copilot |
+| `AppShell.tsx` | 頂層 layout — Topbar + Unified Sidebar (3 sections) + Main + AI Copilot |
 | `Topbar.tsx` | 頂部導覽列 |
-| `EquipmentNavigator.tsx` | 左側設備選單（Operations Center 模式） |
-| `AnalysisPanel.tsx` | 中央分析結果面板（Contract 渲染） |
+| `AnalysisPanel.tsx` | 中央分析結果面板（Contract 渲染，full-page overlay） |
 
 ### 4.2 AI Copilot（右側面板）
 

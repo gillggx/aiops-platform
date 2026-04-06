@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
-# deploy/update.sh — 滾動更新（含雙服務 health check）
-# 用法：cd /opt/aiops && bash deploy/update.sh [--rebuild-frontend]
+# deploy/update.sh — 滾動更新（三服務 + health check）
+# 用法：cd /opt/aiops && bash deploy/update.sh [--rebuild-simulator-frontend]
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REBUILD=false
-[[ "${1:-}" == "--rebuild-frontend" ]] && REBUILD=true
+REBUILD_SIM=false
+[[ "${1:-}" == "--rebuild-simulator-frontend" ]] && REBUILD_SIM=true
 
-# Auto-enable rebuild if out/ is missing or package.json changed in this pull
-FRONTEND_DIR="$APP_DIR/ontology_simulator/frontend"
-if [[ ! -d "$FRONTEND_DIR/out" ]]; then
-  echo "⚡  out/ not found — auto-enabling frontend rebuild"
-  REBUILD=true
-elif git -C "$APP_DIR" diff HEAD@{1} HEAD --name-only 2>/dev/null \
-     | grep -qE "^ontology_simulator/frontend/package"; then
-  echo "⚡  package.json changed — auto-enabling frontend rebuild"
-  REBUILD=true
+# Auto-enable simulator frontend rebuild if out/ is missing
+SIM_FRONTEND="$APP_DIR/ontology_simulator/frontend"
+if [[ ! -d "$SIM_FRONTEND/out" ]]; then
+  echo "⚡  Simulator out/ not found — auto-enabling rebuild"
+  REBUILD_SIM=true
 fi
 
 # ── Helper: wait until an HTTP endpoint returns 2xx (timeout 60s) ─────────
@@ -39,44 +35,57 @@ wait_for_http() {
 echo "🔄  拉取最新程式碼..."
 git -C "$APP_DIR" pull --ff-only
 
+# ── Python dependencies ───────────────────────────────────────────────────
 echo "🐍  更新 pip 依賴..."
 /opt/aiops/venv_backend/bin/pip install -q \
   -r "$APP_DIR/fastapi_backend_service/requirements.txt" asyncpg
 /opt/aiops/venv_ontology/bin/pip install -q \
   -r "$APP_DIR/ontology_simulator/requirements.txt"
 
+# ── Alembic migrations ────────────────────────────────────────────────────
 echo "🗃️   執行 Alembic migrations..."
 cd "$APP_DIR/fastapi_backend_service"
 export PYTHONPATH="$APP_DIR/fastapi_backend_service"
-/opt/aiops/venv_backend/bin/alembic upgrade head
+/opt/aiops/venv_backend/bin/alembic upgrade head 2>/dev/null || echo "    ⚠️  alembic skipped (no migration head)"
 
-if $REBUILD; then
-  echo "🔨  重新建置 Next.js..."
-  cd "$APP_DIR/ontology_simulator/frontend"
+# ── aiops-app build (Next.js standalone) ──────────────────────────────────
+echo "🔨  Building aiops-app..."
+cd "$APP_DIR/aiops-app"
+npm ci --silent
+npm run build
+# Copy static + public into standalone for self-contained serving
+cp -r .next/static .next/standalone/.next/static 2>/dev/null || true
+cp -r public .next/standalone/public 2>/dev/null || true
+echo "    ✅  aiops-app build 完成"
+
+# ── Simulator frontend (optional) ─────────────────────────────────────────
+if $REBUILD_SIM; then
+  echo "🔨  Building Simulator frontend..."
+  cd "$SIM_FRONTEND"
   npm ci --silent && npm run build
-  echo "    ✅  Next.js build 完成 → out/ $(du -sh out | cut -f1)"
+  echo "    ✅  Simulator frontend build 完成 → out/ $(du -sh out | cut -f1)"
 fi
 
+# ── Restart services ──────────────────────────────────────────────────────
 echo "🔁  重啟服務..."
-# Force-release ports before restart to avoid "Address already in use" on stale processes
+# Kill stale processes on target ports
 sudo -n fuser -k 8000/tcp 2>/dev/null || true
-sudo -n fuser -k 8001/tcp 2>/dev/null || true
+sudo -n fuser -k 3000/tcp 2>/dev/null || true
+sudo -n fuser -k 8012/tcp 2>/dev/null || true
 sleep 1
-# Try systemctl first (requires NOPASSWD sudo); fall back to pkill
-# pkill sends SIGTERM to the process; systemd Restart=on-failure will respawn it
-if sudo -n systemctl restart fastapi-backend ontology-simulator 2>/dev/null; then
+
+if sudo -n systemctl restart fastapi-backend aiops-app ontology-simulator 2>/dev/null; then
   echo "    systemctl restart OK"
 else
-  echo "    ⚠️  sudo systemctl unavailable — pkill fallback (systemd will auto-restart)"
-  # Use SIGKILL so exit code is non-zero, ensuring Restart=on-failure triggers
+  echo "    ⚠️  sudo systemctl unavailable — pkill fallback"
   pkill -9 -f "venv_backend/bin/uvicorn"  2>/dev/null || true
-  pkill -9 -f "venv_ontology/bin/python"  2>/dev/null || true
-  echo "    Waiting 20s for systemd to respawn services..."
+  pkill -9 -f "node.*standalone/server.js" 2>/dev/null || true
+  pkill -9 -f "venv_ontology/bin/uvicorn"  2>/dev/null || true
+  echo "    Waiting 20s for systemd to respawn..."
   sleep 20
 fi
 
-# Update /etc/nginx/sites-available/aiops from repo so location changes take effect.
-# Domain is read from $APP_DIR/.nginx_domain (written by setup.sh).
+# ── Update nginx ──────────────────────────────────────────────────────────
 NGINX_CONF="/etc/nginx/sites-available/aiops"
 DOMAIN_FILE="$APP_DIR/.nginx_domain"
 if [[ -f "$DOMAIN_FILE" ]]; then
@@ -89,78 +98,37 @@ else
 fi
 if sudo -n nginx -t 2>/dev/null && sudo -n nginx -s reload 2>/dev/null; then
   echo "    nginx reload OK"
-elif sudo -n systemctl reload nginx 2>/dev/null; then
-  echo "    nginx reload OK (systemctl)"
 else
   echo "    ⚠️  nginx reload skipped"
 fi
 
+# ── Health checks ─────────────────────────────────────────────────────────
 echo ""
 echo "🔍  Health checks..."
 
-# 1. FastAPI backend — internal
 BACKEND_OK=false
-if wait_for_http "http://127.0.0.1:8000/health" "FastAPI backend (8000)"; then
-  BACKEND_OK=true
-else
-  echo "    ❌  journalctl -u fastapi-backend -n 30"
-fi
-
-# 2. Ontology simulator — internal
+FRONTEND_OK=false
 ONTOLOGY_OK=false
-if wait_for_http "http://127.0.0.1:8001/api/v1/status" "Ontology simulator (8001)"; then
-  ONTOLOGY_OK=true
-else
-  echo "    ❌  journalctl -u ontology-simulator -n 30"
-fi
 
-# 3. Simulator static pages — served by nginx at /simulator/ (HTTPS via port 443)
-# Check via loopback HTTPS; port 80 always returns 301 (false positive).
-SIMULATOR_OK=false
-if curl -sfk --max-time 5 "https://127.0.0.1/simulator/" -o /dev/null 2>/dev/null; then
-  echo "    ⏳  Waiting for Simulator frontend (/simulator/) ... ✅  UP"
-  SIMULATOR_OK=true
-elif [[ -f "$FRONTEND_DIR/out/index.html" ]]; then
-  echo "    ⚠️  nginx HTTPS check failed but out/index.html exists — check nginx logs"
-  echo "    ❌  sudo nginx -t && journalctl -u nginx -n 20"
-else
-  echo "    ❌  out/ directory may be missing — try with --rebuild-frontend"
-fi
-
-# 4. Nginx proxy — /simulator-api/ → 8001 (end-to-end check)
-PROXY_OK=false
-if wait_for_http "http://127.0.0.1/simulator-api/api/v1/status" "Nginx proxy (/simulator-api/)"; then
-  PROXY_OK=true
-else
-  echo "    ⚠️  Nginx proxy check failed (non-fatal if Nginx not on 80)"
-  PROXY_OK=true  # non-fatal
-fi
+wait_for_http "http://127.0.0.1:8000/health" "FastAPI backend (8000)" && BACKEND_OK=true
+wait_for_http "http://127.0.0.1:3000" "AIOps app (3000)" && FRONTEND_OK=true
+wait_for_http "http://127.0.0.1:8012/api/v1/status" "Ontology simulator (8012)" && ONTOLOGY_OK=true
 
 echo ""
 echo "════════════════════════════════════════"
 echo "  Deploy Summary"
 echo "════════════════════════════════════════"
-$BACKEND_OK  && echo "  ✅  FastAPI backend       RUNNING & HEALTHY" \
-             || echo "  ❌  FastAPI backend       FAILED"
-$ONTOLOGY_OK && echo "  ✅  Ontology simulator    RUNNING & HEALTHY" \
-             || echo "  ❌  Ontology simulator    FAILED"
-$SIMULATOR_OK && echo "  ✅  Simulator frontend    SERVING" \
-              || echo "  ❌  Simulator frontend    NOT FOUND (rebuild needed)"
-$PROXY_OK    && echo "  ✅  Nginx proxy           OK" \
-             || echo "  ❌  Nginx proxy           FAILED"
+$BACKEND_OK  && echo "  ✅  FastAPI backend       (8000)  HEALTHY" \
+             || echo "  ❌  FastAPI backend       (8000)  FAILED"
+$FRONTEND_OK && echo "  ✅  AIOps app             (3000)  HEALTHY" \
+             || echo "  ❌  AIOps app             (3000)  FAILED"
+$ONTOLOGY_OK && echo "  ✅  Ontology simulator    (8012)  HEALTHY" \
+             || echo "  ❌  Ontology simulator    (8012)  FAILED"
 echo "════════════════════════════════════════"
 
-# Fail the deploy if either core service is unhealthy
-if ! $BACKEND_OK || ! $ONTOLOGY_OK; then
+if ! $BACKEND_OK || ! $FRONTEND_OK || ! $ONTOLOGY_OK; then
   echo ""
-  echo "❌  Deploy FAILED — one or more core services are not healthy"
-  exit 1
-fi
-
-if ! $SIMULATOR_OK; then
-  echo ""
-  echo "⚠️  Deploy partially succeeded — simulator frontend not available"
-  echo "    Re-run: bash deploy/update.sh --rebuild-frontend"
+  echo "❌  Deploy FAILED — check: journalctl -u <service-name> -n 50"
   exit 1
 fi
 

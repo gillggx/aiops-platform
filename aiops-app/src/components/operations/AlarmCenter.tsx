@@ -86,82 +86,208 @@ function StatusChip({ status }: { status: string }) {
   );
 }
 
-function FindingsPanel({ alarm }: { alarm: Alarm }) {
+// ── Alarm Detail Modal ────────────────────────────────────────────────────────
+
+function AlarmDetailModal({ alarm, onClose }: { alarm: Alarm; onClose: () => void }) {
+  const [tab, setTab] = useState<"trigger" | "diagnostic">("trigger");
+
   const hasApFindings = alarm.findings && Object.keys(alarm.findings).length > 0;
   const hasDrFindings = alarm.diagnostic_findings && Object.keys(alarm.diagnostic_findings).length > 0;
   const parsed = parseSummary(alarm.summary);
+  const sev = SEV[alarm.severity] ?? SEV.MEDIUM;
 
   return (
-    <div style={{ padding: "12px 16px", background: "#f8fafc", borderTop: "1px solid #e2e8f0" }}>
-
-      {/* Layer 1: Auto-Patrol trigger findings */}
-      <div style={{ marginBottom: hasDrFindings || alarm.diagnostic_log_id ? 16 : 10 }}>
-        <div style={{
-          fontSize: 11, fontWeight: 700, color: "#718096", marginBottom: 8,
-          textTransform: "uppercase", letterSpacing: "0.4px",
-          display: "flex", alignItems: "center", gap: 6,
-        }}>
-          <span style={{ background: "#e2e8f0", borderRadius: 4, padding: "1px 6px" }}>1</span>
-          觸發原因（Auto-Patrol）
-        </div>
-        {hasApFindings ? (
-          <RenderMiddleware findings={alarm.findings!} outputSchema={alarm.output_schema ?? []} />
-        ) : parsed && Object.keys(parsed).length > 0 ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {Object.entries(parsed).map(([k, v]) => (
-              <div key={k} style={{
-                background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6,
-                padding: "4px 10px", fontSize: 12,
-              }}>
-                <span style={{ color: "#718096" }}>{k}: </span>
-                <span style={{ fontWeight: 600, color: "#2d3748" }}>
-                  {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ fontSize: 12, color: "#a0aec0" }}>{alarm.summary || "無觸發資料"}</div>
-        )}
-      </div>
-
-      {/* Layer 2: Diagnostic Rule findings */}
-      {hasDrFindings && (
-        <div style={{ borderTop: "2px dashed #bee3f8", paddingTop: 14, marginBottom: 10 }}>
-          <div style={{
-            fontSize: 11, fontWeight: 700, color: "#2b6cb0", marginBottom: 8,
-            textTransform: "uppercase", letterSpacing: "0.4px",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <span style={{ background: "#ebf8ff", color: "#2b6cb0", borderRadius: 4, padding: "1px 6px" }}>2</span>
-            深度診斷結果（Diagnostic Rule）
-          </div>
-          <RenderMiddleware
-            findings={alarm.diagnostic_findings!}
-            outputSchema={alarm.diagnostic_output_schema ?? []}
-          />
-        </div>
-      )}
-
-      {!hasDrFindings && alarm.diagnostic_log_id && (
-        <div style={{ fontSize: 11, color: "#a0aec0", marginBottom: 10, borderTop: "1px dashed #e2e8f0", paddingTop: 10 }}>
-          🔄 診斷規則已觸發，等待結果...
-        </div>
-      )}
-
-      <a
-        href="/admin/skills"
-        target="_blank"
-        rel="noreferrer"
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(0,0,0,0.4)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
         style={{
-          display: "inline-flex", alignItems: "center", gap: 4,
-          padding: "5px 12px", borderRadius: 6,
-          background: "#ebf4ff", color: "#2b6cb0",
-          fontSize: 12, fontWeight: 600, textDecoration: "none",
+          background: "#fff", borderRadius: 12,
+          width: "min(720px, 90vw)", maxHeight: "85vh",
+          display: "flex", flexDirection: "column",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
         }}
       >
-        🔬 前往 Diagnostic Rules
-      </a>
+        {/* Header */}
+        <div style={{
+          padding: "16px 20px", borderBottom: "1px solid #e2e8f0",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{
+              width: 28, height: 28, borderRadius: 6, background: sev.bg,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 14,
+            }}>🚨</span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#1a202c" }}>
+                AI 診斷報告 | {alarm.equipment_id} - {alarm.title}
+              </div>
+              <div style={{ fontSize: 11, color: "#a0aec0", marginTop: 1 }}>
+                {alarm.trigger_event} · {timeAgo(alarm.created_at)}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none", border: "none", fontSize: 20, color: "#a0aec0",
+              cursor: "pointer", padding: "4px 8px", lineHeight: 1,
+            }}
+          >✕</button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{
+          display: "flex", gap: 0, borderBottom: "1px solid #e2e8f0",
+          padding: "0 20px",
+        }}>
+          <button
+            onClick={() => setTab("trigger")}
+            style={{
+              padding: "10px 16px", border: "none", cursor: "pointer",
+              borderBottom: tab === "trigger" ? "2px solid #2b6cb0" : "2px solid transparent",
+              background: "transparent",
+              color: tab === "trigger" ? "#2b6cb0" : "#718096",
+              fontWeight: tab === "trigger" ? 700 : 400,
+              fontSize: 13, marginBottom: -1,
+            }}
+          >1. 觸發事件 (Trigger Event)</button>
+          <button
+            onClick={() => setTab("diagnostic")}
+            style={{
+              padding: "10px 16px", border: "none", cursor: "pointer",
+              borderBottom: tab === "diagnostic" ? "2px solid #2b6cb0" : "2px solid transparent",
+              background: "transparent",
+              color: tab === "diagnostic" ? "#2b6cb0" : "#718096",
+              fontWeight: tab === "diagnostic" ? 700 : 400,
+              fontSize: 13, marginBottom: -1,
+            }}
+          >2. 診斷分析 (Diagnostic Analysis)</button>
+        </div>
+
+        {/* Tab content */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px" }}>
+          {tab === "trigger" && (
+            <div>
+              {/* Trigger banner */}
+              <div style={{
+                background: alarm.findings?.condition_met ? "#fef2f2" : "#f0fdf4",
+                border: `1px solid ${alarm.findings?.condition_met ? "#fca5a5" : "#86efac"}`,
+                borderRadius: 8, padding: "14px 16px", marginBottom: 16,
+              }}>
+                <div style={{
+                  fontSize: 12, fontWeight: 700, marginBottom: 4,
+                  color: alarm.findings?.condition_met ? "#dc2626" : "#16a34a",
+                }}>
+                  {alarm.findings?.condition_met ? "🔴 觸發原因 (AUTO-PATROL)" : "🟢 觸發原因 (AUTO-PATROL)"}
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>
+                  {alarm.findings?.condition_met ? "條件達成 — 將觸發警報" : "條件未達成"}
+                </div>
+                {alarm.findings?.summary && (
+                  <div style={{
+                    marginTop: 8, padding: "8px 12px", borderRadius: 6,
+                    background: alarm.findings.condition_met ? "#fee2e2" : "#dcfce7",
+                    fontSize: 12, color: "#4a5568", fontFamily: "monospace",
+                  }}>
+                    {alarm.findings.summary}
+                  </div>
+                )}
+              </div>
+
+              {/* Rendered findings */}
+              {hasApFindings ? (
+                <RenderMiddleware findings={alarm.findings!} outputSchema={alarm.output_schema ?? []} />
+              ) : parsed && Object.keys(parsed).length > 0 ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {Object.entries(parsed).map(([k, v]) => (
+                    <div key={k} style={{
+                      background: "#f7fafc", border: "1px solid #e2e8f0", borderRadius: 6,
+                      padding: "6px 12px", fontSize: 12,
+                    }}>
+                      <span style={{ color: "#718096" }}>{k}: </span>
+                      <span style={{ fontWeight: 600, color: "#2d3748" }}>
+                        {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "#a0aec0" }}>{alarm.summary || "無觸發資料"}</div>
+              )}
+            </div>
+          )}
+
+          {tab === "diagnostic" && (
+            <div>
+              {hasDrFindings ? (
+                <>
+                  {/* Diagnostic banner */}
+                  <div style={{
+                    background: alarm.diagnostic_findings?.condition_met ? "#fef2f2" : "#f0fdf4",
+                    border: `1px solid ${alarm.diagnostic_findings?.condition_met ? "#fca5a5" : "#86efac"}`,
+                    borderRadius: 8, padding: "14px 16px", marginBottom: 16,
+                  }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, marginBottom: 4,
+                      color: alarm.diagnostic_findings?.condition_met ? "#dc2626" : "#16a34a",
+                    }}>
+                      {alarm.diagnostic_findings?.condition_met
+                        ? "🔴 深度診斷結果 (DIAGNOSTIC RULE)"
+                        : "🟢 深度診斷結果 (DIAGNOSTIC RULE)"}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>
+                      {alarm.diagnostic_findings?.condition_met ? "條件達成 — 需要處置" : "條件未達成 — 不需觸發警報"}
+                    </div>
+                    {alarm.diagnostic_findings?.summary && (
+                      <div style={{
+                        marginTop: 8, padding: "8px 12px", borderRadius: 6,
+                        background: alarm.diagnostic_findings.condition_met ? "#fee2e2" : "#dcfce7",
+                        fontSize: 12, color: "#4a5568",
+                      }}>
+                        {alarm.diagnostic_findings.summary}
+                      </div>
+                    )}
+                  </div>
+
+                  <RenderMiddleware
+                    findings={alarm.diagnostic_findings!}
+                    outputSchema={alarm.diagnostic_output_schema ?? []}
+                  />
+                </>
+              ) : alarm.diagnostic_log_id ? (
+                <div style={{ padding: 32, textAlign: "center", color: "#a0aec0" }}>
+                  <div style={{ fontSize: 24, marginBottom: 8 }}>⏳</div>
+                  <div style={{ fontSize: 13 }}>診斷規則已觸發，等待結果...</div>
+                </div>
+              ) : (
+                <div style={{ padding: 32, textAlign: "center", color: "#a0aec0" }}>
+                  <div style={{ fontSize: 24, marginBottom: 8 }}>📋</div>
+                  <div style={{ fontSize: 13 }}>尚無診斷規則結果</div>
+                  <a
+                    href="/admin/skills"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "inline-block", marginTop: 12,
+                      padding: "6px 14px", borderRadius: 6,
+                      background: "#ebf4ff", color: "#2b6cb0",
+                      fontSize: 12, fontWeight: 600, textDecoration: "none",
+                    }}
+                  >🔬 前往 Diagnostic Rules</a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -170,24 +296,19 @@ function FindingsPanel({ alarm }: { alarm: Alarm }) {
 
 function AlarmRow({
   alarm,
-  expanded,
-  onToggle,
+  onSelect,
   onAck,
   onResolve,
 }: {
   alarm: Alarm;
-  expanded: boolean;
-  onToggle: () => void;
+  onSelect: () => void;
   onAck: (id: number) => void;
   onResolve: (id: number) => void;
 }) {
-  const sev = SEV[alarm.severity] ?? SEV.MEDIUM;
-
   return (
     <div style={{ borderBottom: "1px solid #e2e8f0" }}>
-      {/* Main row */}
       <div
-        onClick={onToggle}
+        onClick={onSelect}
         style={{
           display: "grid",
           gridTemplateColumns: "90px 1fr 100px 80px 90px 140px",
@@ -195,9 +316,11 @@ function AlarmRow({
           gap: 8,
           padding: "10px 16px",
           cursor: "pointer",
-          background: expanded ? sev.bg : "#fff",
+          background: "#fff",
           transition: "background 0.1s",
         }}
+        onMouseEnter={e => { e.currentTarget.style.background = "#f7fafc"; }}
+        onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
       >
         <SeverityBadge sev={alarm.severity} />
 
@@ -216,7 +339,6 @@ function AlarmRow({
 
         <StatusChip status={alarm.status} />
 
-        {/* Actions */}
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }} onClick={e => e.stopPropagation()}>
           {alarm.status === "active" && (
             <button
@@ -226,9 +348,7 @@ function AlarmRow({
                 background: "#ebf8ff", color: "#2b6cb0",
                 fontSize: 11, fontWeight: 600, cursor: "pointer",
               }}
-            >
-              認領
-            </button>
+            >認領</button>
           )}
           {alarm.status !== "resolved" && (
             <button
@@ -238,17 +358,18 @@ function AlarmRow({
                 background: "#f0fff4", color: "#276749",
                 fontSize: 11, fontWeight: 600, cursor: "pointer",
               }}
-            >
-              解決
-            </button>
+            >解決</button>
           )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(); }}
+            style={{
+              padding: "3px 10px", borderRadius: 5, border: "1px solid #e2e8f0",
+              background: "#f7fafc", color: "#4a5568",
+              fontSize: 11, fontWeight: 600, cursor: "pointer",
+            }}
+          >AI診斷</button>
         </div>
       </div>
-
-      {/* Expand panel */}
-      {expanded && (
-        <FindingsPanel alarm={alarm} />
-      )}
     </div>
   );
 }
@@ -264,13 +385,13 @@ const STATUS_TABS = [
 const SEV_OPTS = ["全部", "CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 export function AlarmCenter() {
-  const [alarms, setAlarms]         = useState<Alarm[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [statusTab, setStatusTab]   = useState<string>("active");
-  const [sevFilter, setSevFilter]   = useState("全部");
-  const [eqFilter, setEqFilter]     = useState("");
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [counts, setCounts]         = useState<Record<string, number>>({ active: 0, acknowledged: 0 });
+  const [alarms, setAlarms]             = useState<Alarm[]>([]);
+  const [loading, setLoading]           = useState(true);
+  const [statusTab, setStatusTab]       = useState<string>("active");
+  const [sevFilter, setSevFilter]       = useState("全部");
+  const [eqFilter, setEqFilter]         = useState("");
+  const [selectedAlarm, setSelectedAlarm] = useState<Alarm | null>(null);
+  const [counts, setCounts]             = useState<Record<string, number>>({ active: 0, acknowledged: 0 });
 
   const fetchAlarms = useCallback(async () => {
     const params = new URLSearchParams({ status: statusTab, limit: "100" });
@@ -333,12 +454,12 @@ export function AlarmCenter() {
   const lowCount  = alarms.filter(a => a.severity === "LOW").length;
 
   return (
-    <div style={{ padding: "20px 24px" }}>
+    <div>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#1a202c" }}>🔔 告警中心</h2>
-          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#a0aec0" }}>每 15 秒自動更新</p>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#1a202c" }}>告警中心</h2>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#a0aec0" }}>每 15 秒自動更新 · 點擊列可展開診斷結果</p>
         </div>
 
         {/* Severity summary pills */}
@@ -374,7 +495,7 @@ export function AlarmCenter() {
           {STATUS_TABS.map(t => (
             <button
               key={t.key}
-              onClick={() => { setStatusTab(t.key); setExpandedId(null); }}
+              onClick={() => { setStatusTab(t.key); }}
               style={{
                 padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
                 background: statusTab === t.key ? "#fff" : "transparent",
@@ -401,7 +522,7 @@ export function AlarmCenter() {
         <div style={{ display: "flex", gap: 8 }}>
           <select
             value={sevFilter}
-            onChange={e => { setSevFilter(e.target.value); setExpandedId(null); }}
+            onChange={e => { setSevFilter(e.target.value); }}
             style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 12, color: "#4a5568" }}
           >
             {SEV_OPTS.map(s => <option key={s}>{s}</option>)}
@@ -454,8 +575,7 @@ export function AlarmCenter() {
             <AlarmRow
               key={alarm.id}
               alarm={alarm}
-              expanded={expandedId === alarm.id}
-              onToggle={() => setExpandedId(expandedId === alarm.id ? null : alarm.id)}
+              onSelect={() => setSelectedAlarm(alarm)}
               onAck={handleAck}
               onResolve={handleResolve}
             />
@@ -465,8 +585,13 @@ export function AlarmCenter() {
 
       {alarms.length > 0 && (
         <div style={{ textAlign: "right", fontSize: 11, color: "#a0aec0", marginTop: 6 }}>
-          共 {alarms.length} 筆 · 點擊列可展開診斷結果
+          共 {alarms.length} 筆
         </div>
+      )}
+
+      {/* Detail modal */}
+      {selectedAlarm && (
+        <AlarmDetailModal alarm={selectedAlarm} onClose={() => setSelectedAlarm(null)} />
       )}
     </div>
   );

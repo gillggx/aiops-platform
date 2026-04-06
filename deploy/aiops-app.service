@@ -1,0 +1,27 @@
+[Unit]
+Description=AIOps Frontend (Next.js standalone, port 3000)
+After=network.target fastapi-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/aiops/aiops-app
+EnvironmentFile=/opt/aiops/aiops-app/.env.local
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node .next/standalone/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiops-app
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/aiops/aiops-app /tmp
+
+[Install]
+WantedBy=multi-user.target

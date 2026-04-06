@@ -1,5 +1,5 @@
 [Unit]
-Description=OntologySimulator MES Backend (port 8001)
+Description=OntologySimulator MES Backend (port 8012)
 After=network.target mongod.service
 Wants=mongod.service
 
@@ -9,7 +9,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/aiops/ontology_simulator
 EnvironmentFile=/opt/aiops/ontology_simulator/.env
-ExecStart=/opt/aiops/venv_ontology/bin/python main.py
+ExecStart=/opt/aiops/venv_ontology/bin/uvicorn main:app --host 127.0.0.1 --port 8012
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

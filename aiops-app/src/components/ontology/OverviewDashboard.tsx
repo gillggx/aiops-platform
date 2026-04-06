@@ -91,7 +91,7 @@ export function OverviewDashboard({ onSelectEquipment, onAskAgent }: Props) {
   const utilization = total > 0 ? Math.round((running / total) * 100) : 0;
 
   return (
-    <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Title */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#1a202c" }}>設備總覽</h2>
@@ -163,37 +163,6 @@ export function OverviewDashboard({ onSelectEquipment, onAskAgent }: Props) {
         )}
       </div>
 
-      {/* Quick Diagnostics */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#4a5568", marginBottom: 10 }}>快速診斷</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {[
-            "目前所有機台狀態如何？",
-            "有哪些設備有異常？",
-            "最近 24 小時有哪些 OOC 事件？",
-            "LOT-001 的良率有問題嗎？",
-          ].map((q) => (
-            <button
-              key={q}
-              onClick={() => onAskAgent(q)}
-              style={{
-                padding: "7px 14px",
-                background: "#ffffff",
-                border: "1px solid #bee3f8",
-                borderRadius: 20,
-                fontSize: 12,
-                color: "#2b6cb0",
-                cursor: "pointer",
-                transition: "background 0.12s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#ebf4ff"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "#ffffff"; }}
-            >
-              {q}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

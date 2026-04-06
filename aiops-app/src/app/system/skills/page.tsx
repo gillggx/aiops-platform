@@ -164,17 +164,17 @@ export default function AllSkillsPage() {
       </div>
 
       {loading ? (
-        <div style={{ padding: 48, textAlign: "center", color: "#718096" }}>載入中���</div>
+        <div style={{ padding: 48, textAlign: "center", color: "#718096" }}>載入中…</div>
       ) : skills.length === 0 ? (
         <div style={{ background: "#fff", borderRadius: 10, padding: 56, textAlign: "center", border: "1px solid #e2e8f0" }}>
-          <p style={{ color: "#718096" }}>尚���任何 Skill</p>
+          <p style={{ color: "#718096" }}>尚無任何 Skill</p>
         </div>
       ) : (
         <div style={{ background: "#fff", borderRadius: 10, border: "1px solid #e2e8f0", overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#f7f8fc", borderBottom: "1px solid #e2e8f0" }}>
-                {["ID", "��稱", "��型", "可見性", "Steps", "Input", "更新時間", ""].map(h => (
+                {["ID", "名稱", "類型", "可見性", "Steps", "Input", "更新時間", ""].map(h => (
                   <th key={h} style={{
                     padding: "10px 14px", textAlign: "left", fontSize: 11,
                     fontWeight: 600, color: "#718096", textTransform: "uppercase", letterSpacing: "0.4px",
@@ -298,7 +298,7 @@ export default function AllSkillsPage() {
         <strong>類型說明：</strong>
         {" "}Diagnostic Rule = 由 AI 生成或手動建立的診斷規則；
         {" "}Auto-Patrol = Auto-Patrol 內嵌的檢查技能；
-        {" "}Skill = 其他用途（SPC 管制圖呈現、promote 的分析��）
+        {" "}Skill = 其他用途（SPC 管制圖呈現、promote 的分析等）
       </div>
     </div>
   );
