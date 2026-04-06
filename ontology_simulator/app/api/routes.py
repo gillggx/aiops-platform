@@ -1,7 +1,12 @@
 """REST API – Time-Machine query + monitoring endpoints."""
+import math
 from datetime import datetime, timezone
+from typing import Optional
+
 from bson import ObjectId
 from fastapi import APIRouter, Query, HTTPException
+from pydantic import BaseModel
+
 from app.database import get_db
 from app.agent.station_agent import acknowledge_hold
 
@@ -155,6 +160,178 @@ async def get_history(
     # Return chronological order (oldest first) for chart rendering
     docs.reverse()
     return docs
+
+
+# ── SPC/DC Analytics helpers ──────────────────────────────────
+
+_VALID_CHARTS = {"xbar_chart", "r_chart", "s_chart", "p_chart", "c_chart"}
+
+
+def _compute_stats(values: list[float]) -> dict:
+    if not values:
+        return {"mean": 0.0, "ucl": 0.0, "lcl": 0.0, "std_dev": 0.0}
+    n = len(values)
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / n
+    std = math.sqrt(var) if var > 0 else 0.0
+    return {
+        "mean": round(mean, 4),
+        "ucl": round(mean + 3 * std, 4),
+        "lcl": round(mean - 3 * std, 4),
+        "std_dev": round(std, 4),
+    }
+
+
+def _trend(points: list[dict]) -> str:
+    recent = [p["value"] for p in points[-10:] if p.get("value") is not None]
+    if len(recent) < 4:
+        return "STABLE"
+    n = len(recent)
+    xi = list(range(n))
+    mi = (n - 1) / 2
+    mv = sum(recent) / n
+    cov = sum((xi[i] - mi) * (recent[i] - mv) for i in range(n))
+    var = sum((xi[i] - mi) ** 2 for i in range(n))
+    slope = cov / var if var > 0 else 0.0
+    span = max(recent) - min(recent) or 1.0
+    rel = slope / span * n
+    if rel > 0.15:
+        return "DRIFTING_UP"
+    if rel < -0.15:
+        return "DRIFTING_DOWN"
+    ooc_recent = sum(1 for p in points[-10:] if p.get("is_ooc"))
+    if ooc_recent >= 3:
+        return "OSCILLATING"
+    return "STABLE"
+
+
+@router.get("/analytics/step-spc")
+async def get_step_spc(
+    step:       str                  = Query(..., description="e.g. STEP_007"),
+    chart_name: str                  = Query(..., description="xbar_chart | r_chart | s_chart | p_chart | c_chart"),
+    limit:      int                  = Query(100, ge=1, le=500),
+    start:      Optional[datetime]   = Query(None),
+    end:        Optional[datetime]   = Query(None),
+):
+    """Step-centric SPC chart timeseries: all lots at `step`, for one control chart."""
+    if chart_name not in _VALID_CHARTS:
+        raise HTTPException(400, f"Invalid chart_name '{chart_name}'. Must be one of: {', '.join(sorted(_VALID_CHARTS))}")
+
+    db = get_db()
+    query: dict = {"objectName": "SPC", "step": step.upper()}
+    time_filter: dict = {}
+    if start:
+        time_filter["$gte"] = _to_naive_utc(start)
+    if end:
+        time_filter["$lte"] = _to_naive_utc(end)
+    if time_filter:
+        query["eventTime"] = time_filter
+
+    cursor = db.object_snapshots.find(query, {"_id": 0}).sort("eventTime", 1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+
+    data: list[dict] = []
+    ooc_count = 0
+    max_consec = 0
+    cur_consec = 0
+
+    for doc in docs:
+        charts = doc.get("charts") or {}
+        chart = charts.get(chart_name)
+        if not chart:
+            continue
+        val = chart.get("value")
+        ucl = chart.get("ucl")
+        lcl = chart.get("lcl")
+        is_ooc = (val is not None and ucl is not None and lcl is not None and (val > ucl or val < lcl))
+        if is_ooc:
+            ooc_count += 1
+            cur_consec += 1
+            max_consec = max(max_consec, cur_consec)
+        else:
+            cur_consec = 0
+        data.append({
+            "eventTime": doc.get("eventTime"),
+            "lotID": doc.get("lotID"),
+            "toolID": doc.get("toolID"),
+            "value": round(val, 4) if val is not None else None,
+            "ucl": ucl,
+            "lcl": lcl,
+            "is_ooc": is_ooc,
+        })
+
+    total = len(data)
+    pass_rate = round((total - ooc_count) / total * 100, 1) if total else 0.0
+    trend_label = _trend(data)
+    ooc_ts = [pt["eventTime"] for pt in data if pt["is_ooc"]][:20]
+
+    return {
+        "step": step.upper(),
+        "chart_name": chart_name,
+        "total": total,
+        "ooc_count": ooc_count,
+        "pass_rate": pass_rate,
+        "consecutive_ooc": max_consec,
+        "trend": trend_label,
+        "ooc_timestamps": ooc_ts,
+        "data": data,
+    }
+
+
+@router.get("/analytics/step-dc")
+async def get_step_dc(
+    step:      str                  = Query(..., description="e.g. STEP_007"),
+    parameter: str                  = Query(..., description="DC sensor key, e.g. sensor_01"),
+    limit:     int                  = Query(100, ge=1, le=500),
+    start:     Optional[datetime]   = Query(None),
+    end:       Optional[datetime]   = Query(None),
+):
+    """Step-centric DC timeseries: all lots that passed through `step`, for one sensor."""
+    db = get_db()
+    query: dict = {"objectName": "DC", "step": step.upper()}
+    time_filter: dict = {}
+    if start:
+        time_filter["$gte"] = _to_naive_utc(start)
+    if end:
+        time_filter["$lte"] = _to_naive_utc(end)
+    if time_filter:
+        query["eventTime"] = time_filter
+
+    cursor = db.object_snapshots.find(query, {"_id": 0}).sort("eventTime", 1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+
+    data: list[float] = []
+    values: list[float] = []
+    rows: list[dict] = []
+
+    for doc in docs:
+        params = doc.get("parameters") or {}
+        val = params.get(parameter)
+        if not isinstance(val, (int, float)):
+            continue
+        values.append(float(val))
+        rows.append({
+            "eventTime": doc.get("eventTime"),
+            "lotID": doc.get("lotID"),
+            "toolID": doc.get("toolID"),
+            "value": round(float(val), 4),
+            "is_ooc": False,
+        })
+
+    stats = _compute_stats(values)
+    ucl, lcl = stats["ucl"], stats["lcl"]
+    for pt in rows:
+        pt["is_ooc"] = pt["value"] > ucl or pt["value"] < lcl
+
+    ooc_count = sum(1 for pt in rows if pt["is_ooc"])
+    return {
+        "step": step.upper(),
+        "parameter": parameter,
+        "total": len(rows),
+        "ooc_count": ooc_count,
+        **stats,
+        "data": rows,
+    }
 
 
 # ── Object Info (metadata query) ─────────────────────────────
