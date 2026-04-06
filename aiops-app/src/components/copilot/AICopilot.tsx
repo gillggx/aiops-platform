@@ -325,19 +325,8 @@ export function AICopilot({
                 }]);
               }
             }
-            // Unified _chart DSL rendering — from execute_mcp (SPC auto-detect) or execute_jit
-            const mcpIntents = card?.chart_intents as ChartIntent[] | undefined;
-            const jitIntents = (card?.type === "utility")
-              ? ((card.payload as Record<string, unknown> | undefined)?.chart_intents as ChartIntent[] | undefined)
-              : undefined;
-            const intents = mcpIntents ?? jitIntents;
-            if (intents && Array.isArray(intents) && intents.length > 0) {
-              setChatHistory(prev => [...prev, {
-                id: nextId(), role: "chart_intents" as const,
-                content: (card?.mcp_name as string) ?? (card?.tool_name as string) ?? "Chart",
-                chartIntents: intents,
-              }]);
-            }
+            // Charts now always go to the analysis panel (center) via contract.visualization.
+            // No longer render chart_intents inline in copilot (right side).
             break;
           }
 

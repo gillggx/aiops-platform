@@ -132,9 +132,15 @@ class AgentOrchestratorV2:
 
             full_history = _messages_to_dicts(existing_history) + this_turn
 
-            # Sliding window: keep last 6 messages (3 turns) as raw
+            # Sliding window: keep last 3 turns (6 messages) as raw.
+            # Also trigger compression if total text exceeds TOKEN_THRESHOLD
+            # even within the window (long tool results can bloat a single turn).
             RAW_WINDOW = 6
-            if len(full_history) > RAW_WINDOW:
+            TOKEN_THRESHOLD = 8000  # ~chars; rough proxy for tokens (1 token ≈ 2 chars for Chinese)
+            total_chars = sum(len(m.get("content", "")) for m in full_history)
+            needs_compress = len(full_history) > RAW_WINDOW or total_chars > TOKEN_THRESHOLD
+
+            if needs_compress and len(full_history) > 2:
                 old_part = full_history[:-RAW_WINDOW]
                 recent_part = full_history[-RAW_WINDOW:]
 
