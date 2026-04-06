@@ -210,45 +210,6 @@ export const DATA_MCPS: MCPDefinition[] = [
     output_description: "回傳 { step, parameter, sensor_key, total_points, ooc_count, pass_rate, ucl, lcl, mean, std_dev, ooc_timestamps, sample_data: [{eventTime, lotID, toolID, value, is_ooc}] }。sample_data 提供前 3 + 後 3 筆供預覽，完整資料在 data 陣列。",
   },
   {
-    name: "get_step_spc_chart",
-    description: `【站點級 SPC 管制圖】以製程站點（Step）為主鍵，取得特定 SPC 管制圖（xbar_chart / r_chart / s_chart / p_chart / c_chart）的完整時序資料，含趨勢判斷與連續 OOC 分析。
-
-回傳欄位說明：
-- step: 製程站點代碼
-- chart_name: 使用的管制圖類型
-- data: [{eventTime, lotID, toolID, value, ucl, lcl, is_ooc}] — 每點對應一批貨的管制圖量測值
-- total_points / ooc_count / pass_rate: 總點數、OOC 數、良率
-- consecutive_ooc: 最大連續 OOC 序列長度（>= 3 為系統性失控警示）
-- trend: "STABLE" | "DRIFTING_UP" | "DRIFTING_DOWN" | "OSCILLATING"
-- ooc_timestamps: OOC 事件時間戳清單（最多 10 筆）
-
-管制圖類型說明：
-- xbar_chart: 均值管制圖（最常用，監控製程均值漂移）
-- r_chart: 全距管制圖（監控批次內變異）
-- s_chart: 標準差管制圖（比 r_chart 更精確的變異管制）
-- p_chart: 不良率管制圖（適合 Pass/Fail 類型的良率監控）
-- c_chart: 缺陷數管制圖（監控每批次的缺陷發生數）
-
-典型使用情境：
-① 「STEP_007 的 xbar 有沒有漂移？」→ step='STEP_007', chart_name='xbar_chart'
-② 連續 OOC 警示：consecutive_ooc >= 3 代表製程可能已系統性失控
-③ 趨勢判斷：trend='DRIFTING_UP' 即使未 OOC 也預示問題將發生
-④ 跨機台 SPC 比較：同站點的資料混合所有機台，能判斷是製程站點問題還是特定機台問題
-
-⚠️ 必填：step（站點代碼）、chart_name（管制圖類型）
-⚠️ chart_name 只能是：xbar_chart、r_chart、s_chart、p_chart、c_chart`,
-    is_handoff: false,
-    parameters: {
-      step:       { type: "string", description: "製程站點代碼，例如 STEP_007（不分大小寫）", required: true },
-      chart_name: { type: "string", description: "SPC 管制圖類型", required: true, enum: ["xbar_chart", "r_chart", "s_chart", "p_chart", "c_chart"] },
-      limit:      { type: "number", description: "最多回傳幾筆（預設 100，最大 500）", required: false },
-      start:      { type: "string", description: "查詢起始時間（ISO 8601）", required: false },
-      end:        { type: "string", description: "查詢結束時間（ISO 8601）", required: false },
-    },
-    usage_example: "診斷 STEP_007 製程失控：呼叫 get_step_spc_chart(step='STEP_007', chart_name='xbar_chart', limit=100)，讀取 trend 和 consecutive_ooc，若 consecutive_ooc >= 3 或 trend != 'STABLE' 則升級為緊急警示。",
-    output_description: "回傳 { step, chart_name, total_points, ooc_count, pass_rate, consecutive_ooc, trend, ooc_timestamps, sample_data: [{eventTime, lotID, toolID, value, ucl, lcl, is_ooc}] }。",
-  },
-  {
     name: "list_object_schema",
     description: `【Object 參數目錄】查詢特定製程物件（APC / EC / FDC / SPC / RECIPE / DC）所有可查詢的 parameter 清單及其 metadata，包含推斷資料型別、覆蓋率、值域範圍、可過濾的屬性欄位。
 

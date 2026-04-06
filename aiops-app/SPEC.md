@@ -1,0 +1,163 @@
+# aiops-app — Spec 2.0
+
+**Date:** 2026-04-06
+**Status:** Living Document (Current Implementation)
+
+---
+
+## 1. 定位
+
+AIOps 平台的 **Frontend 應用層**。同時扮演兩個角色：
+
+- **Operations Center** — 值班工程師的操作介面（告警看板、Agent 對話、設備下鑽、批次追蹤）
+- **Knowledge Studio** — 資深工程師的知識管理（Diagnostic Rules、Auto-Patrols、MCP 管理）
+- **System Admin** — IT 管理員的系統設定（Data Sources、Event Registry、All Skills）
+
+## 2. 技術棧
+
+| Category | Tech | Version |
+|----------|------|---------|
+| Framework | Next.js (App Router) | 15.2.4 |
+| React | React 19 | 19.0.0 |
+| Language | TypeScript | strict mode |
+| Chart (declarative) | Vega-Lite + Vega | 5.21 / 5.30 |
+| Chart (interactive) | Plotly.js | 3.4 |
+| Graph Layout | @xyflow/react + dagre | 12.10 / 2.0 |
+| Markdown | react-markdown + remark-gfm | 10.1 |
+| Contract Types | aiops-contract (local) | `file:../aiops-contract/typescript` |
+| AI SDK | @anthropic-ai/sdk | 0.80 |
+
+## 3. 頁面結構
+
+### 3.1 Operations Center（預設）
+
+| Route | Page | 說明 |
+|-------|------|------|
+| `/` | Home | 雙 Tab：Alarm Center（告警中心）+ Equipment Overview（設備總覽） |
+| `/events` | Events | 全廠事件記錄，15 秒自動刷新，右側 Copilot |
+| `/lots` | Lots | 批次追蹤，flow history + DC/SPC 資料，右側 Copilot |
+| `/topology` | Topology | 九類製程物件拓撲圖（LOT/TOOL/RECIPE/APC/DC/SPC/EC/FDC/OCAP） |
+
+### 3.2 Knowledge Studio（/admin）
+
+| Route | Page | 說明 |
+|-------|------|------|
+| `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成） |
+| `/admin/auto-patrols` | Auto-Patrols | 自動巡檢排程管理 |
+| `/admin/mcps` | MCP Catalog | MCP 瀏覽與編輯 |
+| `/admin/memories` | Agent Memories | 長期記憶管理（approve / reject） |
+| `/admin/event-types` | Event Types | 事件類型登錄 |
+| `/admin/automation/scripts` | Scripts | 腳本版本管理（draft → active → archived） |
+| `/admin/automation/cron-jobs` | Cron Jobs | 排程 Cron 管理 |
+
+### 3.3 System Admin（/system）
+
+| Route | Page | 說明 |
+|-------|------|------|
+| `/system/data-sources` | Data Sources | System MCP 管理（endpoint_url / input_schema / sample fetch） |
+| `/system/event-registry` | Event Registry | 事件登錄與 NATS 監控 |
+| `/system/skills` | All Skills | 全 Skill 總覽 + detail review（Steps / Schema / Metadata） |
+
+## 4. 核心 Components
+
+### 4.1 Shell & Layout
+
+| Component | 說明 |
+|-----------|------|
+| `AppShell.tsx` | 頂層 layout — Topbar + Contextual Sidebar + Main + AI Copilot |
+| `Topbar.tsx` | 頂部導覽列 |
+| `EquipmentNavigator.tsx` | 左側設備選單（Operations Center 模式） |
+| `AnalysisPanel.tsx` | 中央分析結果面板（Contract 渲染） |
+
+### 4.2 AI Copilot（右側面板）
+
+| Component | 說明 |
+|-----------|------|
+| `AICopilot.tsx` | Agent 對話主體 — SSE streaming、triggerMessage、contract state、handoff 處理 |
+| `ChartIntentRenderer.tsx` | _chart DSL → Vega-Lite 動態生成 |
+| `ContractCard.tsx` | Contract 摘要卡片 |
+
+### 4.3 Contract 渲染
+
+| Component | 說明 |
+|-----------|------|
+| `ContractRenderer.tsx` | AIOpsReportContract JSON → 結構化報告（summary + evidence + actions） |
+| `EvidenceChain.tsx` | 證據鏈樹狀顯示 |
+| `SuggestedActions.tsx` | 建議動作按鈕（agent / aiops_handoff / promote_analysis） |
+| `VegaLiteChart.tsx` | Vega-Lite spec 渲染器 |
+| `PlotlyVisualization.tsx` | Plotly 互動圖表 |
+| `KpiCard.tsx` | KPI 指標卡片 |
+
+### 4.4 Ontology 視覺化
+
+| Component | 說明 |
+|-----------|------|
+| `TopologyCanvas.tsx` | 九類物件拓撲圖（D3/Canvas，node 顏色語意） |
+| `EquipmentDetail.tsx` | 設備深潛面板（DC/SPC/Event/EC） |
+| `OverviewDashboard.tsx` | 全廠概覽 dashboard |
+
+## 5. API Routes（Proxy Layer）
+
+aiops-app 的 API routes 全部是 **proxy** — 轉發到 `fastapi_backend_service`。
+
+### 5.1 主要 Proxy
+
+| Frontend API | Backend Target | 說明 |
+|--------------|----------------|------|
+| `POST /api/agent/chat` | `POST /api/v1/agent/chat/stream` | Agent SSE 對話（duplex streaming） |
+| `GET /api/admin/skills` | `GET /api/v1/skill-definitions` | Skill 列表 |
+| `POST /api/admin/rules/generate-steps/stream` | `POST /api/v1/diagnostic-rules/generate-steps/stream` | SSE Rule 生成 |
+| `GET/POST /api/admin/auto-patrols` | `/api/v1/auto-patrols` | Auto-Patrol CRUD |
+| `GET/POST /api/admin/alarms` | `/api/v1/alarms` | 告警管理 |
+| `POST /api/admin/analysis/promote` | `POST /api/v1/analysis/promote` | 分析提升為 Rule |
+| `GET /api/admin/automation/*` | `/api/v1/*` | Automation catch-all |
+| `GET /api/ontology/*` | `/api/v1/ontology/*` | Ontology catch-all |
+| `GET /api/mcp-catalog` | — | 回傳 MCP catalog（from store or catalog.ts） |
+
+## 6. MCP Catalog（src/mcp/catalog.ts）
+
+前端維護的完整 MCP 定義，注入到 Agent 的 system prompt：
+
+| Category | Count | 範例 |
+|----------|-------|------|
+| Data MCPs | 8 | get_dc_timeseries, get_spc_data, get_lot_trace, query_object_parameter |
+| Handoff MCPs | 3 | open_lot_trace, open_drill_down, open_topology |
+| Automation MCPs | 8 | register_cron_job, test_run_skill, dispatch_action |
+| **Total** | **19** | |
+
+> 注意：Data MCPs 是「前端定義、供 Agent 參考」的 catalog，**實際的 System MCP 在 backend DB 中管理**。
+> Catalog 的用途是讓 Agent 知道「有哪些工具可用 + 如何呼叫」。
+
+## 7. State Management
+
+### AppContext（唯一 Context Provider）
+
+```typescript
+{
+  selectedEquipment: { equipment_id, name, status } | null
+  triggerMessage: string | null           // 觸發 Agent 查詢
+  contract: AIOpsReportContract | null    // 分析結果 → AnalysisPanel
+  investigateMode: boolean                // 切換調查模式
+}
+```
+
+## 8. 圖表渲染路徑
+
+```
+Agent tool result
+  → render_card (backend adapter.py)
+    → contract.visualization[] (Vega-Lite spec)
+      → ContractRenderer → VegaLiteChart (中央 AnalysisPanel)
+
+Agent text response
+  → AICopilot (右側面板, markdown only, 不渲染圖表)
+```
+
+所有圖表 **只在中央 AnalysisPanel** 渲染，Copilot 只顯示文字。
+
+## 9. 環境變數
+
+| Variable | Default | 說明 |
+|----------|---------|------|
+| `NEXT_PUBLIC_FASTAPI_BASE` | `http://localhost:8000` | Backend API base URL |
+| `AGENT_BASE_URL` | `http://localhost:8000` | Agent chat endpoint |

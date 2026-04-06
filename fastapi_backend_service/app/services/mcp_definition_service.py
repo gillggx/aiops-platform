@@ -43,11 +43,30 @@ def _normalize_chart_name(raw: str) -> str:
     return _SPC_CHART_ALIASES.get(key, key)
 
 
-def _normalize_params(params: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_params(params: Dict[str, Any], mcp_name: str = "") -> Dict[str, Any]:
     """Normalize known agent short-form values before forwarding to system MCP endpoints."""
+    params = dict(params)  # shallow copy — don't mutate caller's dict
+
     if "chart_name" in params:
-        params = dict(params)  # shallow copy — don't mutate caller's dict
         params["chart_name"] = _normalize_chart_name(params["chart_name"])
+
+    # ── object_name / object_id → toolID / lotID mapping ─────────────────
+    # list_recent_events uses generic object_name/object_id interface;
+    # the underlying simulator /api/v1/events expects toolID / lotID.
+    if "object_name" in params and "object_id" in params:
+        obj_name = str(params.pop("object_name", "")).upper()
+        obj_id = str(params.pop("object_id", ""))
+        if obj_name == "TOOL":
+            params["toolID"] = obj_id
+        elif obj_name == "LOT":
+            params["lotID"] = obj_id
+        # For other object types (APC, SPC, DC, etc.), pass as-is for
+        # endpoints that support them (e.g. /objects/query).
+        # Re-add for non-events endpoints that need object_name directly.
+        elif obj_name:
+            params["object_name"] = obj_name
+            params["object_id"] = obj_id
+
     return params
 
 
@@ -55,23 +74,26 @@ def _normalize_params(params: Dict[str, Any]) -> Dict[str, Any]:
 # MCPs that support time-window filtering (backed by /api/v1/events).
 # When agent passes `since="7d"`, backend transforms it into `start_time=<iso>`
 # by fetching the simulator's latest event time and subtracting the duration.
-_TIME_WINDOW_MCPS = {"list_recent_events", "get_process_history"}
+_TIME_WINDOW_MCPS = {"list_recent_events", "get_process_history", "query_object_timeseries"}
 
 # Per-MCP default time window (applied when agent passes no since / start_time).
 _DEFAULT_SINCE: Dict[str, str] = {
-    "list_recent_events":  "7d",   # 最近事件：預設看 7 天
-    "get_process_history": "7d",   # 製程歷史：預設看 7 天
+    "list_recent_events":      "7d",   # 最近事件：預設看 7 天
+    "get_process_history":     "7d",   # 製程歷史：預設看 7 天
+    "query_object_timeseries": "7d",   # 物件時序：��設看 7 天
 }
 
 # Per-MCP safety cap on returned rows (applied when agent passes no limit).
 # OntologySimulator enforces limit <= 500 on /api/v1/events.
 _DEFAULT_LIMIT: Dict[str, int] = {
-    "list_recent_events":  500,
-    "get_process_history": 500,
+    "list_recent_events":      500,
+    "get_process_history":     500,
+    "query_object_timeseries": 500,
 }
 _MAX_LIMIT: Dict[str, int] = {
-    "list_recent_events":  500,
-    "get_process_history": 500,
+    "list_recent_events":      500,
+    "get_process_history":     500,
+    "query_object_timeseries": 500,
 }
 
 

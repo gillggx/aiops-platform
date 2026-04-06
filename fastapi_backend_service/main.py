@@ -253,7 +253,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "  - 問「最近一週」→ 不帶 since，用預設 7d\n"
             "  - 問「本月」→ 用 since='30d'\n"
             "  - 統計類問題（例如「最差機台」「OOC 排行」）→ 用預設或更大時間窗，取得足夠樣本\n"
-            "  - limit 僅作為上限保護（simulator API 限制最大 500），主要篩選邏輯是時間窗\n"
+            "  - 回傳筆數上限 500（simulator API 限制），主要篩選邏輯是時間窗\n"
             "\n"
             "使用時機：\n"
             "  ① 查機台最近事件 → toolID='EQP-01'\n"
@@ -272,7 +272,6 @@ _ONTOLOGY_SYSTEM_MCPS = [
                 {"name": "toolID", "type": "string", "description": "機台 ID（格式 EQP-XX，e.g. EQP-01）；toolID 或 lotID 至少提供一個", "required": False},
                 {"name": "lotID",  "type": "string", "description": "批次 ID（格式 LOT-XXXX，e.g. LOT-0001）；toolID 或 lotID 至少提供一個", "required": False},
                 {"name": "since",  "type": "string",  "description": "⚠️ 字串格式：'24h' | '7d' | '14d' | '30d' | '2w'。禁止使用 since_hours=24 或 hours=24。預設 '7d'", "required": False},
-                {"name": "limit",  "type": "integer", "description": "回傳筆數上限（safety cap），預設 500，最大 500（simulator API 限制）", "required": False},
             ]
         },
     },
@@ -288,7 +287,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "\n"
             "使用時機：\n"
             "  ① 使用者問「STEP_013 有哪些 SPC charts」→ 先呼叫此 MCP 取得 available_fields\n"
-            "  ② 再用 available_fields 的值去呼叫 get_step_spc_chart 或 Skill\n"
+            "  ② 再用 available_fields 的值去呼叫相關 Skill 或 query_object_timeseries\n"
             "  ③ 查 APC/DC 有哪些參數名稱 → 同理\n"
             "⚠️ 不要猜 chart_name 或 parameter name — 一定要先查 get_object_info 取得正確名稱"
         ),
@@ -303,6 +302,103 @@ _ONTOLOGY_SYSTEM_MCPS = [
                 {"name": "objectName", "type": "string", "description": "物件類型：SPC / APC / DC / RECIPE", "required": True},
             ]
         },
+    },
+    {
+        "name": "list_recent_events",
+        "description": (
+            "【最近事件清單】查詢最新的製程事件，支援依物件類型 + 物件 ID 篩選。\n"
+            "每筆記錄包含：eventTime、lotID、toolID、step、spc_status（PASS/OOC）、fdc_class、eventType。\n"
+            "\n"
+            "object_name 支援：\n"
+            "  - LOT：依批次篩選（object_id 格式 LOT-XXXX）\n"
+            "  - TOOL：依機台篩選（object_id 格式 EQP-XX）\n"
+            "  - 其他（APC, SPC, DC, RECIPE…）：未來擴充，目前等同不篩選\n"
+            "\n"
+            "⚠️ since 參數格式鐵律（違反會回 INVALID_SINCE 錯誤）：\n"
+            "  ✅ 正確：since='24h' / since='7d' / since='14d' / since='30d'（字串！）\n"
+            "  ❌ 錯誤：since_hours=24 / hours=24 / since=24 / timeRange='today'\n"
+            "\n"
+            "⏰ 時間窗設計：預設 since='7d'（回傳 7 天內事件，上限 500 筆）\n"
+            "  - 問「今天的」→ 用 since='24h'\n"
+            "  - 統計類問題 → 用預設或更大時間窗\n"
+            "\n"
+            "使用時機：\n"
+            "  ① 查機台最近事件 → object_name='TOOL', object_id='EQP-01'\n"
+            "  ② 查批次事件 → object_name='LOT', object_id='LOT-0001'\n"
+            "  ③ 全廠最近事件 → 不帶 object_name/object_id"
+        ),
+        "api_config": {
+            "endpoint_url": f"{_SIM}/api/v1/events",
+            "method": "GET",
+            "headers": {},
+        },
+        "input_schema": {
+            "fields": [
+                {"name": "object_name", "type": "string", "description": "物件類型：LOT / TOOL / APC / SPC / DC / RECIPE（可選，不帶則查全部）", "required": False},
+                {"name": "object_id",   "type": "string", "description": "物件 ID（配合 object_name），e.g. EQP-01、LOT-0001（可選）", "required": False},
+                {"name": "since",       "type": "string", "description": "⚠️ 字串格式：'24h' | '7d' | '14d' | '30d' | '2w'。預設 '7d'", "required": False},
+            ]
+        },
+    },
+    {
+        "name": "query_object_timeseries",
+        "description": (
+            "【物件參數時序查詢】查詢 APC/DC/SPC/RECIPE 物件的單一參數時序，自動計算 3σ OOC 旗標。\n"
+            "回傳：{object_name, parameter, total_points, stats{mean,ucl,lcl,std_dev,ooc_count}, data[]}\n"
+            "\n"
+            "parameter 格式：\n"
+            "  - SPC：charts.xbar_chart.value / charts.r_chart.value / charts.s_chart.value\n"
+            "  - APC：直接用參數名稱，e.g. rf_power_bias\n"
+            "  - DC：sensor 顯示名稱，e.g. Chamber Press\n"
+            "\n"
+            "⚠️ 不確定有哪些 parameter → 先呼叫 get_object_info 查詢 available_fields\n"
+            "\n"
+            "使用時機：\n"
+            "  ① APC model drift → object_name='APC', object_id='APC-007', parameter='rf_power_bias'\n"
+            "  ② SPC 趨勢 → object_name='SPC', object_id='STEP_007', parameter='charts.xbar_chart.value'\n"
+            "  ③ DC 量測趨勢 → object_name='DC', object_id='EQP-01', parameter='Chamber Press'"
+        ),
+        "api_config": {
+            "endpoint_url": f"{_SIM}/api/v1/objects/query",
+            "method": "POST",
+            "headers": {},
+        },
+        "input_schema": {
+            "fields": [
+                {"name": "object_name", "type": "string", "description": "物件類型：APC / DC / SPC / RECIPE", "required": True},
+                {"name": "object_id",   "type": "string", "description": "物件 ID，e.g. APC-007、EQP-01、STEP_042", "required": True},
+                {"name": "parameter",   "type": "string", "description": "參數名稱，e.g. rf_power_bias、charts.xbar_chart.value", "required": True},
+                {"name": "since",       "type": "string", "description": "時間窗：'24h' | '7d' | '14d' | '30d'。預設 '7d'", "required": False},
+            ]
+        },
+    },
+    {
+        "name": "list_tools",
+        "description": (
+            "【機台清單】列出廠內所有機台及其目前狀態。\n"
+            "回傳：[{tool_id, status}]\n"
+            "使用時機：確認有哪些機台 ID 可用"
+        ),
+        "api_config": {
+            "endpoint_url": f"{_SIM}/api/v1/tools",
+            "method": "GET",
+            "headers": {},
+        },
+        "input_schema": {"fields": []},
+    },
+    {
+        "name": "get_simulation_status",
+        "description": (
+            "【模擬器系統狀態】取得 OntologySimulator 目前的整體狀態快照。\n"
+            "回傳：{lots: {Processing, Waiting}, tools: {Busy}, total_events, total_snapshots}\n"
+            "使用時機：了解目前有多少批次在跑、多少機台在忙碌"
+        ),
+        "api_config": {
+            "endpoint_url": f"{_SIM}/api/v1/status",
+            "method": "GET",
+            "headers": {},
+        },
+        "input_schema": {"fields": []},
     },
     # NOTE: get_lot_trajectory, get_tool_trajectory, etc. were using /api/v2/ontology/...
     # endpoints which do NOT exist in the current OntologySimulator. Removed to prevent
@@ -897,6 +993,18 @@ async def _seed_data() -> None:
                     existing_mcp.api_config = _json.dumps(spec["api_config"], ensure_ascii=False)
                     existing_mcp.input_schema = _json.dumps(spec["input_schema"], ensure_ascii=False)
                     logger.info("Updated OntologySim system MCP: %s", spec["name"])
+            # Remove stale system MCPs not in canonical list
+            _canonical_names = {s["name"] for s in _ONTOLOGY_SYSTEM_MCPS}
+            _stale_result = await db.execute(
+                select(_MCPModel).where(
+                    _MCPModel.mcp_type == "system",
+                    _MCPModel.name.notin_(_canonical_names),
+                )
+            )
+            for stale_mcp in _stale_result.scalars().all():
+                logger.info("Removing stale system MCP: %s (id=%s)", stale_mcp.name, stale_mcp.id)
+                await db.delete(stale_mcp)
+
         except Exception as _seed_err2:
             logger.warning("OntologySim MCP seeding skipped: %s", _seed_err2)
             await db.rollback()
