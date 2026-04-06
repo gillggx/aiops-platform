@@ -19,6 +19,7 @@ const STUDIO_ITEMS = [
 const SYSTEM_ITEMS = [
   { href: "/system/data-sources",   label: "Data Sources",   icon: "🗄️" },
   { href: "/system/event-registry", label: "Event Registry", icon: "📋" },
+  { href: "/system/skills",         label: "All Skills",     icon: "⚙️" },
 ];
 
 function NavLink({ href, icon, label, active }: {
