@@ -274,12 +274,37 @@ _ONTOLOGY_SYSTEM_MCPS = [
             ]
         },
     },
-    # NOTE: get_lot_trajectory, get_tool_trajectory, get_tool_step_trajectory,
-    # get_object_history, get_baseline_stats, search_ooc_events, get_tools_status_overview,
-    # get_dc_timeseries, get_equipment_constants, get_fdc_uchart, get_ocap
-    # were using /api/v2/ontology/... endpoints which do NOT exist in the current
-    # OntologySimulator (port 8012). Removed to prevent seeding broken MCPs.
-    # These can be re-added when v2 endpoints are implemented.
+    {
+        "name": "get_object_info",
+        "description": (
+            "【物件 metadata 查詢】查詢指定 step + objectName 有哪些可用的 fields（charts / parameters）。\n"
+            "objectName: SPC / APC / DC / RECIPE\n"
+            "\n"
+            "回傳：{step, objectName, field_type, available_fields, sample_count}\n"
+            "  - SPC 的 field_type='charts'，available_fields 列出可用的 chart 名稱（xbar_chart, r_chart, ...）\n"
+            "  - APC/DC/RECIPE 的 field_type='parameters'，available_fields 列出可用的參數名稱\n"
+            "\n"
+            "使用時機：\n"
+            "  ① 使用者問「STEP_013 有哪些 SPC charts」→ 先呼叫此 MCP 取得 available_fields\n"
+            "  ② 再用 available_fields 的值去呼叫 get_step_spc_chart 或 Skill\n"
+            "  ③ 查 APC/DC 有哪些參數名稱 → 同理\n"
+            "⚠️ 不要猜 chart_name 或 parameter name — 一定要先查 get_object_info 取得正確名稱"
+        ),
+        "api_config": {
+            "endpoint_url": f"{_SIM}/api/v1/object-info",
+            "method": "GET",
+            "headers": {},
+        },
+        "input_schema": {
+            "fields": [
+                {"name": "step",       "type": "string", "description": "製程站點代碼，e.g. STEP_013", "required": True},
+                {"name": "objectName", "type": "string", "description": "物件類型：SPC / APC / DC / RECIPE", "required": True},
+            ]
+        },
+    },
+    # NOTE: get_lot_trajectory, get_tool_trajectory, etc. were using /api/v2/ontology/...
+    # endpoints which do NOT exist in the current OntologySimulator. Removed to prevent
+    # seeding broken MCPs. Re-add when v2 endpoints are implemented.
 ]
 
 _UNUSED_V2_MCPS = [

@@ -157,6 +157,75 @@ async def get_history(
     return docs
 
 
+# ── Object Info (metadata query) ─────────────────────────────
+
+# Maps objectName → which key in the snapshot holds the enumerable fields
+_FIELD_SOURCES = {
+    "SPC":    ("charts",     "charts"),
+    "APC":    ("parameters", "parameters"),
+    "DC":     ("parameters", "parameters"),
+    "RECIPE": ("parameters", "parameters"),
+}
+
+
+@router.get("/object-info")
+async def get_object_info(
+    step:       str = Query(..., description="e.g. STEP_013"),
+    objectName: str = Query(..., description="SPC | APC | DC | RECIPE"),
+):
+    """Return metadata about what fields/charts are available for a given
+    step + objectName combination.
+
+    Looks up one snapshot from object_snapshots to extract field names,
+    then counts total snapshots matching the query.
+
+    Response:
+      {step, objectName, field_type, available_fields, sample_count}
+    """
+    db = get_db()
+    obj = objectName.upper()
+
+    if obj not in _FIELD_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"objectName must be one of: {', '.join(_FIELD_SOURCES.keys())}. Got: {objectName}",
+        )
+
+    field_key, field_type = _FIELD_SOURCES[obj]
+
+    # Find one snapshot to extract field names
+    sample = await db.object_snapshots.find_one(
+        {"objectName": obj, "step": step},
+        {"_id": 0, field_key: 1},
+        sort=[("eventTime", -1)],
+    )
+
+    if sample is None:
+        return {
+            "step": step,
+            "objectName": obj,
+            "field_type": field_type,
+            "available_fields": [],
+            "sample_count": 0,
+        }
+
+    fields_data = sample.get(field_key, {})
+    available_fields = sorted(fields_data.keys()) if isinstance(fields_data, dict) else []
+
+    # Count total snapshots for this step + objectName
+    sample_count = await db.object_snapshots.count_documents(
+        {"objectName": obj, "step": step},
+    )
+
+    return {
+        "step": step,
+        "objectName": obj,
+        "field_type": field_type,
+        "available_fields": available_fields,
+        "sample_count": sample_count,
+    }
+
+
 # ── Monitoring ────────────────────────────────────────────────
 
 @router.get("/status")
