@@ -57,11 +57,11 @@ export function readMcps(): StoredMCP[] {
   const catalogMap = new Map(MCP_CATALOG.map((m) => [m.name, m]));
   return stored.map((m) => {
     const catalog = catalogMap.get(m.name);
+    const merged = { ...(catalog ?? {}), ...m };
     return {
-      usage_example: "",
-      output_description: "",
-      ...(catalog ?? {}),
-      ...m,
+      ...merged,
+      usage_example: merged.usage_example ?? "",
+      output_description: merged.output_description ?? "",
     };
   });
 }
@@ -95,10 +95,10 @@ export function readSkills(): StoredSkill[] {
   const skills = readStore<StoredSkill[]>("skills", []);
   // Backward-compat: add missing new fields with empty defaults
   return skills.map((s) => ({
-    event_trigger:    "",
-    diagnostic_prompt: "",
-    expected_output:  "",
     ...s,
+    event_trigger:     s.event_trigger ?? "",
+    diagnostic_prompt: s.diagnostic_prompt ?? "",
+    expected_output:   s.expected_output ?? "",
   }));
 }
 
