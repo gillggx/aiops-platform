@@ -391,64 +391,70 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["mcp_name", "template", "params"],
         },
     },
-    # ── [v15.4] JIT Analyze — server-side sandbox with full MCP dataset ──
+    # ── Ad-hoc Analysis (replaces execute_jit) ─────────────────────────
     {
-        "name": "execute_jit",
+        "name": "execute_analysis",
         "description": (
-            "【第二點五優先級 v15.4】以自訂 Python 對 MCP 全量資料進行沙盒分析，資料完全在 Server 端處理。\n"
-            "★ 任何統計分析、視覺化、回歸、時序、分群等需求，優先使用此工具（不需把資料傳給 LLM）。\n"
-            "流程：Agent 看 schema (5筆) → 寫 python_code → execute_jit(mcp_id, run_params, python_code)\n"
-            "  Server 端自動：抓取 MCP 全量資料 → 沙盒執行 python_code（df 已預注入）→ 回傳結果\n"
-            "沙盒已預裝：df (pandas DataFrame, 全量), np, pd, math, statistics, go (plotly), px\n"
-            "python_code 必須定義 process(raw_data: list) -> dict，可透過 df 操作全量資料\n"
-            "常用模式：\n"
-            "  統計量     → df['value'].describe().to_dict()\n"
-            "  線性回歸   → coeffs = np.polyfit(range(len(df)), df['value'], 1)\n"
+            "【一次性分析工具】執行 Agent 動態生成的分析程式碼，結果顯示在分析面板。\n"
+            "可理解為「動態建立一個一次性 Diagnostic Rule 並立刻執行」。\n"
             "\n"
-            "【★ 圖表輸出 — _chart / _charts DSL（優先使用，取代 Plotly）】\n"
-            "在 process() 回傳 dict 中包含 '_chart' 或 '_charts' key，前端會自動渲染：\n"
-            "  return {\n"
-            "    'status': 'success',\n"
-            "    'message': '分析完成',\n"
-            "    '_charts': [\n"
-            "      {\n"
-            "        'type': 'line',           # line | bar | scatter\n"
-            "        'title': 'STEP_022 P-chart',\n"
-            "        'data': [{...}, {...}],   # list of dicts — 每個 dict 是一個 data point\n"
-            "        'x': 'event_time',        # x 軸 field name\n"
-            "        'y': ['p_chart'],          # y 軸 fields (支援多條線)\n"
-            "        'rules': [                # 水平標線 (optional)\n"
-            "          {'value': 56, 'label': 'UCL', 'style': 'danger'},\n"
-            "          {'value': 44, 'label': 'LCL', 'style': 'danger'},\n"
-            "          {'value': 50, 'label': 'CL',  'style': 'center'},\n"
-            "        ],\n"
-            "        'highlight': {'field': 'spc_status', 'eq': 'OOC'},  # 條件著色 (optional)\n"
-            "      }\n"
-            "    ]\n"
+            "★ 使用時機：\n"
+            "  - <skill_catalog> 裡沒有合適的現成 Skill 時\n"
+            "  - 需要撈資料 + 處理 + 畫圖 + 判斷的複合分析\n"
+            "  - 結果如果有用，使用者可以一鍵儲存為常用 Diagnostic Rule\n"
+            "\n"
+            "★ steps 格式（跟 Diagnostic Rule 一樣）：\n"
+            "  每個 step 的 python_code 在同一個 async scope 裡執行，\n"
+            "  可呼叫 await execute_mcp(mcp_name, params) 撈資料。\n"
+            "  可用變數：equipment_id, lot_id, step, event_time, _input\n"
+            "\n"
+            "★ 圖表輸出 — 在最後一步 assign _chart 或 _charts：\n"
+            "  _chart = {\n"
+            "    'type': 'line',\n"
+            "    'title': 'STEP_022 P-chart',\n"
+            "    'data': [{'eventTime': '...', 'value': 46.5, 'is_ooc': False}, ...],\n"
+            "    'x': 'eventTime', 'y': ['value'],\n"
+            "    'rules': [{'value': 56, 'label': 'UCL', 'style': 'danger'}],\n"
+            "    'highlight': {'field': 'is_ooc', 'eq': True},\n"
             "  }\n"
-            "rules.style: danger(紅虛線), warning(橘虛線), center(灰點線)\n"
-            "⚠️ _chart 比 Plotly 更輕量（只傳資料+意圖，前端自動渲染），優先使用。\n"
-            "⚠️ 仍可用 Plotly: fig = go.Figure(...); return {'chart_data': fig.to_json()}\n"
-            "⚠️ 禁止在 python_code 裡 import requests/os/sys/subprocess"
+            "\n"
+            "★ 診斷結果 — 在最後一步 assign _findings：\n"
+            "  _findings = {\n"
+            "    'condition_met': True/False,\n"
+            "    'summary': '一句話結論',\n"
+            "    'outputs': {...},\n"
+            "    'impacted_lots': [...],\n"
+            "  }\n"
+            "\n"
+            "⚠️ 禁止在 python_code 裡 import requests/os/sys/subprocess\n"
+            "⚠️ 不要猜 MCP 參數名 — 先用 get_object_info 查\n"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "mcp_name": {"type": "string", "description": "MCP 名稱，必須與 <mcp_catalog> 中的 name 完全相符"},
-                "run_params": {
-                    "type": "object",
-                    "description": "MCP 執行參數，例如 {CHART_NAME: 'CD', lot_id: 'L2603001'}",
-                },
-                "python_code": {
-                    "type": "string",
-                    "description": "Python 程式碼，必須定義 process(raw_data: list) -> dict 函式",
-                },
                 "title": {
                     "type": "string",
-                    "description": "分析標題，顯示於工作區面板",
+                    "description": "分析標題（顯示在分析面板頂部）",
+                },
+                "steps": {
+                    "type": "array",
+                    "description": "分析步驟清單，每步含 step_id + nl_segment + python_code",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step_id": {"type": "string"},
+                            "nl_segment": {"type": "string", "description": "此步驟的自然語言說明"},
+                            "python_code": {"type": "string", "description": "Python 程式碼"},
+                        },
+                        "required": ["step_id", "nl_segment", "python_code"],
+                    },
+                },
+                "input_params": {
+                    "type": "object",
+                    "description": "執行參數（例如 {step: 'STEP_013', equipment_id: 'EQP-01'}）",
                 },
             },
-            "required": ["mcp_name", "python_code"],
+            "required": ["title", "steps", "input_params"],
         },
     },
     # ── [v15.3] Generic Tools (inline / small dataset only) ───────────────
@@ -550,7 +556,8 @@ class ToolDispatcher:
         "build_mcp", "build_skill",
         "patch_mcp", "patch_skill_raw",
         "search_catalog",   # returns catalog items, not raw datasets
-        "execute_jit",      # already analyzed — no need for DataProfile
+        "execute_analysis",  # result already processed in sandbox
+        "execute_jit",      # legacy alias — kept for backward compat
         "execute_utility",  # result is already processed by generic tool
         "analyze_data",     # pre-built template result already processed
     })
@@ -696,7 +703,18 @@ class ToolDispatcher:
                             "title": tool_input.get("title", ""),
                         },
                     )
-                # ── [v15.4] JIT Analyze — server-side sandbox ─────────────
+                # ── Ad-hoc Analysis (replaces execute_jit) ──────────────
+                case "execute_analysis":
+                    return await self._call_api(
+                        "POST",
+                        "/api/v1/analysis/run",
+                        body={
+                            "title": tool_input.get("title", "Ad-hoc 分析"),
+                            "steps": tool_input.get("steps", []),
+                            "input_params": tool_input.get("input_params", {}),
+                        },
+                    )
+                # Legacy alias — kept for backward compat
                 case "execute_jit":
                     mcp_id = await self._resolve_mcp_id(tool_input)
                     if mcp_id is None:

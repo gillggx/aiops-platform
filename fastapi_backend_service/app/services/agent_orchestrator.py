@@ -986,6 +986,63 @@ def _build_render_card(
                 "analyze_stats": ad_data.get("stats") or {},
             }
 
+    # ── execute_analysis → contract with visualization (analysis panel) ──
+    if tool_name == "execute_analysis" and isinstance(result, dict):
+        if result.get("status") == "success":
+            data = result.get("data") or {}
+            charts = data.get("charts") or []
+            findings = data.get("findings") or {}
+
+            # Convert _chart DSL objects to Vega-Lite specs for contract.visualization
+            from app.services.agent_orchestrator_v2.nodes.tool_execute import _chart_intent_to_vega_lite
+            visualization = []
+            for i, chart in enumerate(charts):
+                try:
+                    vega_spec = _chart_intent_to_vega_lite(chart)
+                    visualization.append({
+                        "id": f"chart_{i}",
+                        "type": "vega-lite",
+                        "title": chart.get("title", f"Chart {i+1}"),
+                        "spec": vega_spec,
+                    })
+                except Exception:
+                    pass
+
+            # Build promote action payload
+            promote_payload = {
+                "title": data.get("title", ""),
+                "steps_mapping": data.get("steps_mapping", []),
+                "input_schema": data.get("input_schema_inferred", []),
+                "output_schema": [],
+            }
+
+            contract = {
+                "$schema": "aiops-report/v1",
+                "summary": findings.get("summary", data.get("title", "")),
+                "evidence_chain": [
+                    {"step": i + 1, "tool": s.get("step_id", ""), "finding": s.get("nl_segment", "")}
+                    for i, s in enumerate(data.get("steps_mapping", []))
+                ],
+                "visualization": visualization,
+                "suggested_actions": [
+                    {
+                        "label": "⭐ 儲存為 Diagnostic Rule",
+                        "trigger": "promote_analysis",
+                        "payload": promote_payload,
+                    },
+                ],
+            }
+
+            if charts:
+                _notify_chart_rendered(result, charts)
+
+            return {
+                "type": "analysis",
+                "tool_name": data.get("title", "Ad-hoc 分析"),
+                "summary": findings.get("summary", ""),
+                "contract": contract,
+            }
+
     # [v15.4] execute_jit → chart or stats panel (server-side sandbox result)
     # result is the raw StandardResponse: {"status": "success", "data": {...}}
     if tool_name == "execute_jit" and isinstance(result, dict):

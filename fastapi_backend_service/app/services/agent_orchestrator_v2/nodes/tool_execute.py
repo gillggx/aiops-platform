@@ -155,3 +155,108 @@ def _trim_result_for_llm(result: Any, max_chars: int = 4000) -> str:
         return text[:max_chars]
     except Exception:
         return str(result)[:max_chars]
+
+
+# ── Chart DSL → Vega-Lite converter (Python port of ChartIntentRenderer) ──
+
+_SERIES_COLORS = ["#4299e1", "#38a169", "#d69e2e", "#9f7aea", "#ed8936", "#e53e3e"]
+_RULE_COLORS = {"danger": "#e53e3e", "warning": "#dd6b20", "center": "#718096"}
+
+
+def _chart_intent_to_vega_lite(intent: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a _chart DSL dict to a Vega-Lite spec.
+
+    Python equivalent of the frontend ChartIntentRenderer.intentToVegaLite().
+    Used by execute_analysis to embed charts in contract.visualization.
+    """
+    chart_type = intent.get("type", "line")
+    title = intent.get("title", "")
+    data = intent.get("data", [])
+    x = intent.get("x", "index")
+    y = intent.get("y", ["value"])
+    rules = intent.get("rules", [])
+    highlight = intent.get("highlight")
+    x_label = intent.get("x_label", x)
+    y_label = intent.get("y_label", y[0] if y else "value")
+
+    layers: List[Dict[str, Any]] = []
+
+    # Main data series
+    for i, y_field in enumerate(y):
+        color = _SERIES_COLORS[i % len(_SERIES_COLORS)]
+
+        if chart_type == "line":
+            layers.append({
+                "mark": {"type": "line", "color": color, "strokeWidth": 1.5},
+                "encoding": {
+                    "x": {"field": x, "type": "ordinal", "title": x_label,
+                          "axis": {"labelAngle": -60, "labelFontSize": 7}},
+                    "y": {"field": y_field, "type": "quantitative", "title": y_label,
+                          "scale": {"zero": False}},
+                },
+            })
+            # Point overlay
+            point_encoding: Dict[str, Any] = {
+                "x": {"field": x, "type": "ordinal"},
+                "y": {"field": y_field, "type": "quantitative"},
+            }
+            if highlight:
+                point_encoding["color"] = {
+                    "condition": {
+                        "test": f"datum.{highlight['field']} === {json.dumps(highlight['eq'])}",
+                        "value": "#e53e3e",
+                    },
+                    "value": color,
+                }
+            else:
+                point_encoding["color"] = {"value": color}
+            layers.append({
+                "mark": {"type": "point", "size": 50, "filled": True},
+                "encoding": point_encoding,
+            })
+        elif chart_type == "bar":
+            layers.append({
+                "mark": {"type": "bar", "color": color},
+                "encoding": {
+                    "x": {"field": x, "type": "nominal", "title": x_label,
+                          "axis": {"labelAngle": -45, "labelFontSize": 8}},
+                    "y": {"field": y_field, "type": "quantitative", "title": y_label,
+                          "scale": {"zero": False}},
+                },
+            })
+        else:  # scatter
+            layers.append({
+                "mark": {"type": "point", "size": 60, "filled": True, "color": color},
+                "encoding": {
+                    "x": {"field": x, "type": "ordinal", "title": x_label},
+                    "y": {"field": y_field, "type": "quantitative", "title": y_label,
+                          "scale": {"zero": False}},
+                },
+            })
+
+    # Rule lines (UCL, LCL, CL)
+    for rule in rules:
+        rule_color = _RULE_COLORS.get(rule.get("style", "danger"), "#e53e3e")
+        dash = [3, 3] if rule.get("style") == "center" else [6, 4]
+        layers.append({
+            "mark": {"type": "rule", "color": rule_color, "strokeDash": dash, "strokeWidth": 1.5},
+            "encoding": {"y": {"datum": rule["value"]}},
+        })
+        layers.append({
+            "mark": {"type": "text", "align": "right", "dx": -2, "fontSize": 9,
+                     "color": rule_color, "fontWeight": "bold"},
+            "encoding": {
+                "y": {"datum": rule["value"]},
+                "text": {"value": f"{rule.get('label', '')}={rule['value']}"},
+                "x": {"value": 0},
+            },
+        })
+
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 280,
+        "title": {"text": title, "fontSize": 13, "anchor": "start"},
+        "data": {"values": data},
+        "layer": layers,
+    }

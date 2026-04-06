@@ -64,6 +64,8 @@ from app.routers.agent_memory_router import router as agent_memory_router
 from app.routers.agent_preference_router import router as agent_preference_router
 # Phase 1: Reflective experience memory
 from app.routers.experience_memory import router as experience_memory_router
+# Ad-hoc analysis + promote
+from app.routers.analysis import router as analysis_router
 
 settings = get_settings()
 _SIM = settings.ONTOLOGY_SIM_URL  # e.g. "http://localhost:8001"
@@ -1115,6 +1117,7 @@ app.include_router(auto_patrols_router, prefix=_PREFIX)      # /api/v1/auto-patr
 app.include_router(diagnostic_rules_router, prefix=_PREFIX)  # /api/v1/diagnostic-rules/...
 # Phase 1: Reflective experience memory
 app.include_router(experience_memory_router, prefix=_PREFIX)  # /api/v1/experience-memory/...
+app.include_router(analysis_router, prefix=_PREFIX)            # /api/v1/analysis/run + /promote
 
 # ---------------------------------------------------------------------------
 # Global Exception Handlers

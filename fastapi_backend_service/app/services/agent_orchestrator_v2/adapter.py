@@ -56,6 +56,7 @@ async def adapt_events(
     _tool_start_count = 0
     _render_card_index = 0
     _current_state = dict(initial_state)
+    _analysis_contract = None  # stashed when execute_analysis produces a contract
 
     # Opening stage events
     yield _stage_event(1, "running")
@@ -122,11 +123,14 @@ async def adapt_events(
                     done_event = {
                         "type": "tool_done",
                         "tool": card.get("mcp_name") or card.get("tool_name") or card.get("skill_name", ""),
-                        "result_summary": "",
+                        "result_summary": card.get("summary", ""),
                         "iteration": _current_state.get("current_iteration", 0),
                     }
                     if card:
                         done_event["render_card"] = card
+                    # Stash analysis contract for the synthesis event
+                    if card and card.get("type") == "analysis" and card.get("contract"):
+                        _analysis_contract = card["contract"]
                     yield done_event
                 if stage:
                     yield _stage_event(stage, "complete")
@@ -135,10 +139,13 @@ async def adapt_events(
                 _seen_synthesis = True
                 output = ev_data.get("output") or {}
                 yield _stage_event(4, "running")
+                # If execute_analysis produced a contract (with visualization),
+                # it takes priority over the LLM-generated contract
+                contract = _analysis_contract or output.get("contract")
                 yield {
                     "type": "synthesis",
                     "text": output.get("final_text", ""),
-                    "contract": output.get("contract"),
+                    "contract": contract,
                 }
                 yield _stage_event(4, "complete")
 
