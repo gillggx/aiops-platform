@@ -9,9 +9,11 @@ aiosqlite==0.20.0        # (legacy — kept for migration scripts only)
 asyncpg==0.30.0          # PostgreSQL async driver
 pgvector>=0.4.0          # pgvector extension support (for Phase 1 memory system)
 
-# ── Observability (Phase 2-A) ─────────────────────────────────────────────────
+# ── Observability + LangGraph (Phase 2) ───────────────────────────────────────
 langsmith>=0.1.0         # Distributed tracing for agent runs
-langchain-core>=0.3.0    # Required by langsmith @traceable decorator
+langchain-core>=0.3.0    # Required by langsmith + langgraph
+langgraph>=0.2.0         # Phase 2-B: StateGraph-based agent orchestrator
+langgraph-checkpoint-postgres>=2.0.0  # Postgres checkpointer for session state
 
 # ── Data Validation & Settings ────────────────────────────────────────────────
 pydantic[email]==2.10.0
