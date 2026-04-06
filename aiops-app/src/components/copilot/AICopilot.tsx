@@ -8,6 +8,7 @@ import { ContractCard } from "./ContractCard";
 import { ChartIntentRenderer, type ChartIntent } from "./ChartIntentRenderer";
 import type { UiRender } from "@/components/McpChartRenderer";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -582,7 +583,7 @@ export function AICopilot({
                       <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
                     ) : (
                       <div style={MD_STYLES} className="md-agent">
-                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                       </div>
                     )}
                   </div>
