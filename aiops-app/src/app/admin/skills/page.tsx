@@ -115,7 +115,7 @@ const S = {
 
 // ── Fix Panel (error auto-fix + user feedback) ──────────────────────────────
 
-function FixPanel({ ruleId, errorMessage, onFixed }: { ruleId: number; errorMessage: string; onFixed: () => void }) {
+function FixPanel({ ruleId, errorMessage, onFixed }: { ruleId: string | number; errorMessage: string; onFixed: () => void }) {
   const [feedback, setFeedback] = useState("");
   const [fixing, setFixing] = useState(false);
   const [fixResult, setFixResult] = useState<string | null>(null);
