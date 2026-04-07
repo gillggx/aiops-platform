@@ -480,7 +480,7 @@ async def list_events(
     cursor = get_db().events.find(filt, {"_id": 0}).sort("eventTime", -1).limit(raw_limit)
     docs   = await cursor.to_list(length=raw_limit)
 
-    # Merge: ProcessEnd wins; if only ProcessStart exists (in-progress), keep it
+    # Merge: ProcessEnd wins; skip in-progress lots (ProcessStart only, no spc_status)
     seen: dict = {}
     for d in docs:  # already newest-first
         key = (d.get("lotID"), d.get("step"))
@@ -489,8 +489,9 @@ async def list_events(
         elif d.get("status") == "ProcessEnd" and seen[key].get("status") == "ProcessStart":
             seen[key] = d  # ProcessEnd always supersedes ProcessStart
 
-    # Sort deduplicated results newest-first, return at most `limit` steps
-    deduped = sorted(seen.values(), key=lambda x: x.get("eventTime", ""), reverse=True)[:limit]
+    # Only return completed processes (ProcessEnd has spc_status)
+    completed = [d for d in seen.values() if d.get("status") == "ProcessEnd"]
+    deduped = sorted(completed, key=lambda x: x.get("eventTime", ""), reverse=True)[:limit]
     return deduped
 
 

@@ -49,14 +49,29 @@ export PYTHONPATH="$APP_DIR/fastapi_backend_service"
 /opt/aiops/venv_backend/bin/alembic upgrade head 2>/dev/null || echo "    ⚠️  alembic skipped (no migration head)"
 
 # ── aiops-app build (Next.js standalone) ──────────────────────────────────
-echo "🔨  Building aiops-app..."
-cd "$APP_DIR/aiops-app"
-npm ci --silent
-npm run build
-# Copy static + public into standalone for self-contained serving
-cp -r .next/static .next/standalone/.next/static 2>/dev/null || true
-cp -r public .next/standalone/public 2>/dev/null || true
-echo "    ✅  aiops-app build 完成"
+REBUILD_APP=false
+if [[ "${1:-}" == "--force-rebuild" ]]; then
+  REBUILD_APP=true
+elif [[ ! -d "$APP_DIR/aiops-app/.next/standalone" ]]; then
+  echo "⚡  .next/standalone not found — auto-enabling rebuild"
+  REBUILD_APP=true
+elif git -C "$APP_DIR" diff HEAD@{1} HEAD --name-only 2>/dev/null \
+     | grep -qE "^aiops-app/"; then
+  echo "⚡  aiops-app changed — auto-enabling rebuild"
+  REBUILD_APP=true
+fi
+
+if $REBUILD_APP; then
+  echo "🔨  Building aiops-app..."
+  cd "$APP_DIR/aiops-app"
+  npm ci --silent
+  npm run build
+  cp -r .next/static .next/standalone/.next/static 2>/dev/null || true
+  cp -r public .next/standalone/public 2>/dev/null || true
+  echo "    ✅  aiops-app build 完成"
+else
+  echo "⏭  aiops-app unchanged — skip build"
+fi
 
 # ── Simulator frontend (optional) ─────────────────────────────────────────
 if $REBUILD_SIM; then

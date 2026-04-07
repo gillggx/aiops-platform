@@ -160,14 +160,18 @@ async def _poll_once(
         if not ev_type_id:
             continue
 
+        _poller_stats["ooc_detected"] += 1
+        _poller_stats["total_events_processed"] += 1
         logger.info(
             "Poller: matched event type=%s equipment=%s lot=%s step=%s",
             ev_type_name, ev.get("toolID", "?"), ev.get("lotID", "?"), ev.get("step", "?"),
         )
 
         try:
+            _poller_stats["skills_triggered"] += 1
             await _process_event(ev, ev_type_name, ev_type_id)
         except Exception as exc:
+            _poller_stats["errors"] += 1
             logger.exception("Poller: _process_event failed: %s", exc)
 
     return max_seen
@@ -186,24 +190,34 @@ async def _load_event_type_map() -> Dict[str, int]:
 
 
 async def run_event_poller(interval: int = _DEFAULT_POLL_INTERVAL) -> None:
-    """Long-running coroutine version (kept for local dev / testing)."""
+    """Long-running coroutine — polls simulator for OOC events."""
     settings = get_settings()
-    sim_url  = settings.ONTOLOGY_SIM_URL
+    sim_url = settings.ONTOLOGY_SIM_URL
     from datetime import timedelta
     last_seen = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+
+    _poller_stats["status"] = "RUNNING"
+    _poller_stats["started_at"] = datetime.now(tz=timezone.utc).isoformat()
     logger.info("EventPoller started (interval=%ds, simulator=%s)", interval, sim_url)
 
     while True:
         try:
+            _poller_stats["total_polls"] += 1
+            _poller_stats["last_poll_at"] = datetime.now(tz=timezone.utc).isoformat()
+
             event_type_map = await _load_event_type_map()
             if event_type_map:
                 new_last = await _poll_once(sim_url, last_seen, event_type_map)
                 if new_last != last_seen:
                     logger.info("EventPoller: advanced last_seen %s → %s", last_seen, new_last)
+                    _poller_stats["last_seen_event"] = new_last.isoformat() if new_last else None
                 last_seen = new_last
         except asyncio.CancelledError:
+            _poller_stats["status"] = "STOPPED"
             return
         except Exception as exc:
+            _poller_stats["errors"] += 1
+            _poller_stats["status"] = "ERROR"
             logger.exception("EventPoller: unexpected error: %s", exc)
         await asyncio.sleep(interval)
 
@@ -211,6 +225,24 @@ async def run_event_poller(interval: int = _DEFAULT_POLL_INTERVAL) -> None:
 # ── APScheduler-compatible job (called every 30s by cron_scheduler) ────────────
 
 _poller_last_seen: Optional[datetime] = None
+
+# ── Observable stats for System Monitor ────────────────────────────────────
+_poller_stats: Dict[str, Any] = {
+    "status": "NOT_STARTED",
+    "started_at": None,
+    "last_poll_at": None,
+    "last_seen_event": None,
+    "total_polls": 0,
+    "total_events_processed": 0,
+    "ooc_detected": 0,
+    "skills_triggered": 0,
+    "errors": 0,
+}
+
+
+def get_poller_stats() -> Dict[str, Any]:
+    """Return a snapshot of poller health stats for the monitor endpoint."""
+    return dict(_poller_stats)
 
 
 _main_loop = None  # set during startup

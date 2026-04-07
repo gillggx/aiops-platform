@@ -23,10 +23,11 @@ const KNOWLEDGE_ITEMS = [
 ];
 
 const ADMIN_ITEMS = [
-  { href: "/system/skills",         label: "Skills",         icon: "⚙️" },
-  { href: "/admin/memories",        label: "Agent Memory",   icon: "🧠" },
-  { href: "/system/data-sources",   label: "Data Sources",   icon: "🗄️" },
-  { href: "/system/event-registry", label: "Event Registry", icon: "📋" },
+  { href: "/system/skills",         label: "Skills",          icon: "⚙️" },
+  { href: "/admin/memories",        label: "Agent Memory",    icon: "🧠" },
+  { href: "/system/data-sources",   label: "Data Sources",    icon: "🗄️" },
+  { href: "/system/event-registry", label: "Event Registry",  icon: "📋" },
+  { href: "/system/monitor",        label: "System Monitor",  icon: "🖥️" },
 ];
 
 function NavLink({ href, icon, label, active }: {
