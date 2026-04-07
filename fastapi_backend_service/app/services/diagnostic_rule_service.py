@@ -504,10 +504,17 @@ Given a diagnostic rule description, decide which MCPs are needed and in what or
 Output ONLY valid JSON. No explanation, no markdown fences.
 
 {mcp_catalog}
+
+Runtime variables available (use in params_template):
+  equipment_id: target equipment ID (e.g. "EQP-01") — always available for event-driven rules
+  lot_id: lot ID — may be empty
+  step: step code — may be empty
+  event_time: ISO8601 timestamp — may be empty
+
 Rules:
 - Only use MCPs from the catalog above
 - Max 5 MCP calls
-- params_template: dynamic values use {{variable_name}} format (e.g. {{{{equipment_id}}}}, {{{{lot_id}}}}, {{{{step}}}})
+- params_template: use {{{{variable_name}}}} for dynamic values (e.g. {{{{equipment_id}}}})
 - List in execution order
 
 Required output format:
