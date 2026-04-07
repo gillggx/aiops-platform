@@ -84,28 +84,36 @@ async def _machine_loop(tool_id: str, queue: asyncio.Queue) -> None:
     pm_threshold = random.randint(8, 12)   # PM every 8-12 lots
 
     while _running:
-        # ── Fast path: shared startup queue ──────────────────────
+        # ── Claim a lot atomically (queue hint → DB atomic lock) ──
         lot = None
+
+        # Try queue first as a hint for which lot to claim
+        queue_hint = None
         try:
-            lot = queue.get_nowait()
+            queue_hint = queue.get_nowait()
         except asyncio.QueueEmpty:
             pass
 
-        # ── Fallback: claim a recycled/waiting lot from DB ────────
+        if queue_hint:
+            # Atomic claim: only succeeds if lot is still Waiting
+            lot = await db.lots.find_one_and_update(
+                {"lot_id": queue_hint["lot_id"], "status": "Waiting"},
+                {"$set": {"status": "Processing"}},
+                return_document=ReturnDocument.AFTER,
+            )
+
+        # Fallback: claim any waiting lot from DB
         if lot is None:
             lot = await _claim_lot_from_db(db)
 
         if lot is None:
-            # Genuinely nothing to do — wait and retry
             await asyncio.sleep(5)
             continue
 
         lot_id   = lot["lot_id"]
         step_num = lot.get("current_step", 1)
 
-        # Mark tool busy (lot is already "Processing" via atomic claim or explicit set)
         await db.tools.update_one({"tool_id": tool_id}, {"$set": {"status": "Busy"}})
-        await db.lots.update_one({"lot_id": lot_id},    {"$set": {"status": "Processing"}})
 
         try:
             await process_step(lot_id, tool_id, step_num)
