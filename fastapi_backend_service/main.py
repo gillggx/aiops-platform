@@ -1131,11 +1131,17 @@ async def lifespan(app: FastAPI):
         await load_all_jobs_into_scheduler(db)
         await load_schedule_patrols_into_scheduler(db)
         break
-    # v18: Event-Driven Poller — stored in module-level list to prevent GC
-    from app.services.event_poller_service import run_event_poller
-    _poller_task = asyncio.create_task(run_event_poller(interval=30))
-    _bg_tasks.append(_poller_task)
-    logger.info("v18 EventPoller started (interval=30s)")
+    # v18: Event-Driven Poller — use APScheduler interval job (reliable in uvicorn)
+    from app.services.event_poller_service import poll_once_job
+    cron_scheduler.add_job(
+        poll_once_job,
+        "interval",
+        seconds=30,
+        id="event_poller",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("v18 EventPoller started via APScheduler (interval=30s)")
     # v2.0: NATS OOC Event Subscriber (only if NATS is configured and reachable)
     from app.services.nats_subscriber_service import start_nats_subscriber, stop_nats_subscriber
     _nats_url = getattr(settings, "NATS_URL", "") or ""

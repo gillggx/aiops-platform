@@ -187,34 +187,63 @@ async def _load_event_type_map() -> Dict[str, int]:
 
 
 async def run_event_poller(interval: int = _DEFAULT_POLL_INTERVAL) -> None:
-    """
-    Long-running coroutine — call via asyncio.create_task() in lifespan.
-    Polls OntologySimulator every `interval` seconds for new events.
-    """
+    """Long-running coroutine version (kept for local dev / testing)."""
     settings = get_settings()
     sim_url  = settings.ONTOLOGY_SIM_URL
-    last_seen: Optional[datetime] = None
-
-    logger.info("EventPoller started (interval=%ds, simulator=%s)", interval, sim_url)
-
-    # Initialise last_seen to 5 min ago so we catch recent OOC events on startup
     from datetime import timedelta
     last_seen = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+    logger.info("EventPoller started (interval=%ds, simulator=%s)", interval, sim_url)
 
     while True:
         try:
             event_type_map = await _load_event_type_map()
-            if not event_type_map:
-                logger.warning("EventPoller: no event_types in DB — skipping cycle")
-            else:
+            if event_type_map:
                 new_last = await _poll_once(sim_url, last_seen, event_type_map)
                 if new_last != last_seen:
                     logger.info("EventPoller: advanced last_seen %s → %s", last_seen, new_last)
                 last_seen = new_last
         except asyncio.CancelledError:
-            logger.info("EventPoller cancelled, shutting down")
             return
         except Exception as exc:
             logger.exception("EventPoller: unexpected error: %s", exc)
-
         await asyncio.sleep(interval)
+
+
+# ── APScheduler-compatible job (called every 30s by cron_scheduler) ────────────
+
+_poller_last_seen: Optional[datetime] = None
+
+
+def poll_once_job() -> None:
+    """Sync entry point for APScheduler — runs async poll in the existing event loop."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.create_task(_poll_once_async())
+    else:
+        asyncio.run(_poll_once_async())
+
+
+async def _poll_once_async() -> None:
+    """Single async poll cycle, maintains state in module-level _poller_last_seen."""
+    global _poller_last_seen
+    from datetime import timedelta
+
+    if _poller_last_seen is None:
+        _poller_last_seen = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+
+    settings = get_settings()
+    sim_url = settings.ONTOLOGY_SIM_URL
+
+    try:
+        event_type_map = await _load_event_type_map()
+        if not event_type_map:
+            logger.warning("EventPoller: no event_types in DB")
+            return
+
+        new_last = await _poll_once(sim_url, _poller_last_seen, event_type_map)
+        if new_last != _poller_last_seen:
+            logger.info("EventPoller: advanced %s → %s", _poller_last_seen, new_last)
+        _poller_last_seen = new_last
+    except Exception as exc:
+        logger.exception("EventPoller job error: %s", exc)
