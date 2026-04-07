@@ -334,6 +334,157 @@ async def get_step_dc(
     }
 
 
+# ── Unified Object Timeseries Query ──────────────────────────
+
+class ObjectQueryRequest(BaseModel):
+    object_name: str       # SPC / APC / DC / RECIPE
+    object_id: str         # step code (SPC), APC model ID, equipment ID (DC)
+    parameter: str         # e.g. charts.xbar_chart.value, rf_power_bias, sensor_01
+    since: Optional[str] = None   # 24h / 7d / 30d
+    limit: int = 200
+
+
+@router.post("/objects/query")
+async def query_object_timeseries(body: ObjectQueryRequest):
+    """Unified object parameter timeseries query.
+
+    Routes to the correct MongoDB query based on object_name:
+    - SPC: queries object_snapshots where objectName=SPC, extracts chart value/ucl/lcl
+    - APC: queries object_snapshots where objectName=APC, extracts parameter value
+    - DC:  queries object_snapshots where objectName=DC, extracts sensor value
+    - RECIPE: queries object_snapshots where objectName=RECIPE, extracts parameter value
+
+    object_id semantics:
+    - SPC → step code (e.g. STEP_007)
+    - APC → APC model ID (e.g. APC-007) or step code
+    - DC  → equipment ID (e.g. EQP-01) or step code
+    """
+    db = get_db()
+    obj = body.object_name.upper()
+    param = body.parameter
+    limit = min(body.limit, 500)
+
+    # Build base query
+    query: dict = {"objectName": obj}
+
+    # object_id → filter field depends on object_name
+    if obj == "SPC":
+        query["step"] = body.object_id.upper()
+    elif obj == "APC":
+        if body.object_id.upper().startswith("APC"):
+            query["objectID"] = body.object_id
+        else:
+            query["step"] = body.object_id.upper()
+    elif obj == "DC":
+        if body.object_id.upper().startswith("EQP"):
+            query["toolID"] = body.object_id
+        else:
+            query["step"] = body.object_id.upper()
+    else:
+        query["step"] = body.object_id.upper()
+
+    # Time filter from since
+    if body.since:
+        from datetime import timedelta
+        import re as _re
+        m = _re.match(r"(\d+)([hdw])", body.since.strip().lower())
+        if m:
+            num, unit = int(m.group(1)), m.group(2)
+            delta = timedelta(hours=num) if unit == "h" else timedelta(days=num) if unit == "d" else timedelta(weeks=num)
+            # Get latest event time from simulator
+            latest_doc = await db.object_snapshots.find_one(
+                {"objectName": obj}, sort=[("eventTime", -1)]
+            )
+            if latest_doc and latest_doc.get("eventTime"):
+                cutoff = latest_doc["eventTime"] - delta
+                query["eventTime"] = {"$gte": cutoff}
+
+    cursor = db.object_snapshots.find(query, {"_id": 0}).sort("eventTime", 1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+
+    # Extract values based on object_name + parameter
+    data = []
+    values_for_stats = []
+
+    for doc in docs:
+        event_time = doc.get("eventTime")
+        lot_id = doc.get("lotID", "")
+        tool_id = doc.get("toolID", "")
+
+        # Navigate to the parameter value using dot-notation
+        val = doc
+        ucl_val = None
+        lcl_val = None
+
+        if obj == "SPC" and param.startswith("charts."):
+            # e.g. charts.xbar_chart.value → doc["charts"]["xbar_chart"]["value"]
+            parts = param.split(".")
+            charts = doc.get("charts") or {}
+            chart = charts.get(parts[1]) if len(parts) >= 2 else {}
+            if isinstance(chart, dict):
+                val = chart.get(parts[2]) if len(parts) >= 3 else chart.get("value")
+                ucl_val = chart.get("ucl")
+                lcl_val = chart.get("lcl")
+            else:
+                val = None
+        elif obj in ("APC", "RECIPE"):
+            params_dict = doc.get("parameters") or {}
+            val = params_dict.get(param)
+        elif obj == "DC":
+            params_dict = doc.get("parameters") or {}
+            # DC sensors might be {sensor_01: {value: X, display_name: Y}} or plain float
+            sensor = params_dict.get(param)
+            if isinstance(sensor, dict):
+                val = sensor.get("value")
+            else:
+                val = sensor
+        else:
+            val = None
+
+        if val is None or not isinstance(val, (int, float)):
+            continue
+
+        val = float(val)
+        values_for_stats.append(val)
+
+        is_ooc = False
+        if ucl_val is not None and lcl_val is not None:
+            is_ooc = val > ucl_val or val < lcl_val
+
+        point = {
+            "eventTime": event_time,
+            "lotID": lot_id,
+            "toolID": tool_id,
+            "value": round(val, 6),
+            "is_ooc": is_ooc,
+        }
+        if ucl_val is not None:
+            point["ucl"] = ucl_val
+        if lcl_val is not None:
+            point["lcl"] = lcl_val
+        data.append(point)
+
+    # Compute stats
+    stats = _compute_stats(values_for_stats) if values_for_stats else {
+        "mean": 0, "std_dev": 0, "ucl": 0, "lcl": 0
+    }
+    ooc_count = sum(1 for d in data if d.get("is_ooc"))
+    total = len(data)
+
+    return {
+        "object_name": obj,
+        "object_id": body.object_id,
+        "parameter": param,
+        "total_points": total,
+        "stats": {
+            **stats,
+            "ooc_count": ooc_count,
+            "pass_rate": round((total - ooc_count) / total * 100, 1) if total else 0,
+        },
+        "data": data,
+    }
+
+
 # ── Object Info (metadata query) ─────────────────────────────
 
 # Maps objectName → which key in the snapshot holds the enumerable fields
