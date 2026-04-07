@@ -82,8 +82,7 @@ async def _process_event(
 
         executor = SkillExecutorService(
             skill_repo=skill_repo,
-            alarm_repo=alarm_repo,
-            mcp_executor=None,  # MCP calls inside skill sandbox use async wrapper
+            mcp_executor=None,
         )
 
         for skill in skills:
