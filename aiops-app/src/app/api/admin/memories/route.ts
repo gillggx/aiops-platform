@@ -26,10 +26,11 @@ export async function GET(req: NextRequest) {
         headers: authHeaders(), cache: "no-store",
       }),
     ]);
-    const legacyData = legacyRes.ok ? await legacyRes.json() : [];
+    const legacyData = legacyRes.ok ? await legacyRes.json() : {};
     const expData = expRes.ok ? await expRes.json() : {};
-    // Merge: legacy returns array directly, experience returns { data: [...] }
-    const legacy = Array.isArray(legacyData) ? legacyData : (legacyData.data ?? []);
+    // legacy returns {memories: [...]} or {data: [...]}, experience returns {data: [...]}
+    const legacy = Array.isArray(legacyData) ? legacyData
+      : (legacyData.memories ?? legacyData.data ?? []);
     const experience = Array.isArray(expData) ? expData : (expData.data ?? []);
     // Tag source for UI distinction
     const tagged = [
