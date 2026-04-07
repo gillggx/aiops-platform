@@ -507,6 +507,8 @@ Rules:
 - Only use MCPs from the list above
 - Max 5 MCP calls
 - params_template: dynamic values use {{variable_name}} format (e.g. {{{{equipment_id}}}}, {{{{lot_id}}}}, {{{{step}}}})
+- ALWAYS pass toolID={{{{equipment_id}}}} when querying process history for a specific machine
+- For event-driven rules: equipment_id is always available from the trigger event
 - List in execution order
 
 Required output format:
@@ -648,6 +650,14 @@ Special function (awaitable, no import needed):
 
 Forbidden: import, open(), exec(), eval(), os, sys, subprocess, trigger_alarm
 INPUT: _input dict contains user input (e.g. equipment_id). Also available as top-level vars: equipment_id, lot_id, step, event_time
+  For event-driven skills: equipment_id comes from the trigger event payload — always use it to scope MCP queries.
+  Example: await execute_mcp('get_process_history', {{"toolID": equipment_id, "limit": 10}})
+
+⚠️ CRITICAL FIELD NAMES:
+  - OOC status is in 'spc_status' field (NOT 'status'). Values: 'PASS' | 'OOC' | null
+  - 'status' field means 'ProcessStart' | 'ProcessEnd' — NOT OOC status
+  - Always check record.get('spc_status') == 'OOC' for OOC detection
+  - get_process_history returns: eventTime, lotID, toolID, step, recipeID, spc_status, apcID
 SCOPE: All steps share the SAME Python scope. Variables from step 1 are directly available in step 2.
   Do NOT use _next_input or _input to pass data between steps.
   _input is ONLY for the original user input, NOT for inter-step data.
