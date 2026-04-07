@@ -306,26 +306,24 @@ _ONTOLOGY_SYSTEM_MCPS = [
     {
         "name": "list_recent_events",
         "description": (
-            "【最近事件清單】查詢最新的製程事件，支援依物件類型 + 物件 ID 篩選。\n"
-            "每筆記錄包含：eventTime、lotID、toolID、step、spc_status（PASS/OOC）、fdc_class、eventType。\n"
+            "【最近製程事件】查詢最新的製程事件（已去重，每個 lot+step 只回一筆 ProcessEnd）。\n"
+            "每筆記錄包含：eventTime、lotID、toolID、step、recipeID、apcID、spc_status（PASS/OOC）。\n"
+            "\n"
+            "⭐ 查 OOC 記錄請用此 MCP：回傳的 spc_status 欄位可直接統計 OOC 比率。\n"
             "\n"
             "object_name 支援：\n"
             "  - LOT：依批次篩選（object_id 格式 LOT-XXXX）\n"
             "  - TOOL：依機台篩選（object_id 格式 EQP-XX）\n"
-            "  - 其他（APC, SPC, DC, RECIPE…）：未來擴充，目前等同不篩選\n"
+            "  - 不帶：查全廠事件\n"
             "\n"
-            "⚠️ since 參數格式鐵律（違反會回 INVALID_SINCE 錯誤）：\n"
-            "  ✅ 正確：since='24h' / since='7d' / since='14d' / since='30d'（字串！）\n"
-            "  ❌ 錯誤：since_hours=24 / hours=24 / since=24 / timeRange='today'\n"
-            "\n"
-            "⏰ 時間窗設計：預設 since='7d'（回傳 7 天內事件，上限 500 筆）\n"
-            "  - 問「今天的」→ 用 since='24h'\n"
-            "  - 統計類問題 → 用預設或更大時間窗\n"
+            "⚠️ since 參數格式鐵律：\n"
+            "  ✅ 正確：since='24h' / since='7d' / since='14d' / since='30d'\n"
+            "  ❌ 錯誤：since_hours=24 / hours=24\n"
             "\n"
             "使用時機：\n"
-            "  ① 查機台最近事件 → object_name='TOOL', object_id='EQP-01'\n"
-            "  ② 查批次事件 → object_name='LOT', object_id='LOT-0001'\n"
-            "  ③ 全廠最近事件 → 不帶 object_name/object_id"
+            "  ① 查最近 OOC 事件 → since='24h'，過濾 spc_status='OOC'\n"
+            "  ② 查機台事件 → object_name='TOOL', object_id='EQP-01'\n"
+            "  ③ 統計 OOC 率 → 計算 spc_status='OOC' 的比例"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/events",

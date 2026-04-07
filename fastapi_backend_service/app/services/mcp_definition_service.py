@@ -60,12 +60,16 @@ def _normalize_params(params: Dict[str, Any], mcp_name: str = "") -> Dict[str, A
             params["toolID"] = obj_id
         elif obj_name == "LOT":
             params["lotID"] = obj_id
-        # For other object types (APC, SPC, DC, etc.), pass as-is for
-        # endpoints that support them (e.g. /objects/query).
-        # Re-add for non-events endpoints that need object_name directly.
         elif obj_name:
             params["object_name"] = obj_name
             params["object_id"] = obj_id
+
+    # ── Auto-dedup for event MCPs ─────────────────────────────────────────
+    # list_recent_events / get_process_history hit /api/v1/events which returns
+    # both ProcessStart and ProcessEnd. Only ProcessEnd has spc_status.
+    # Force dedup=true so we only get ProcessEnd (one per lot+step).
+    if mcp_name in ("list_recent_events", "get_process_history"):
+        params["dedup"] = "true"
 
     return params
 
@@ -1029,7 +1033,7 @@ class MCPDefinitionService:
             elif isinstance(raw_data, list) and raw_data and isinstance(raw_data[0], dict):
                 params_dict = raw_data[0]
 
-            params_dict = _normalize_params(params_dict)
+            params_dict = _normalize_params(params_dict, mcp_name=obj.name)
 
             # ── Time-window MCPs: resolve `since` → `start_time` ─────────────
             if obj.name in _TIME_WINDOW_MCPS:
