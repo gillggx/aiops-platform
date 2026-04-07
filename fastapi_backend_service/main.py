@@ -325,13 +325,14 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "⚠️ 判斷 OOC 必須用 spc_status == 'OOC'，不要用 'FAIL' 或其他值。\n"
             "\n"
             "篩選參數：\n"
-            "  object_name: TOOL（依機台）/ LOT（依批次）/ 不帶（全廠）\n"
-            "  object_id: 配合 object_name，e.g. EQP-01、LOT-0001\n"
+            "  object_name: 只能填 'TOOL' 或 'LOT'（不要填 SPC/APC/DC）\n"
+            "  object_id: TOOL 時填 EQP-XX，LOT 時填 LOT-XXXX\n"
             "  since: 時間窗 '24h' / '7d' / '14d' / '30d'（預設 '7d'）\n"
             "\n"
             "使用範例：\n"
             "  查某機台最近事件 → object_name='TOOL', object_id='EQP-01', since='7d'\n"
-            "  統計全廠 OOC 率 → since='24h'，計算 spc_status=='OOC' 的比例"
+            "  查全廠最近事件（含 OOC）→ 不帶 object_name，since='24h'\n"
+            "  統計 OOC 率 → 過濾結果中 spc_status=='OOC' 的比例"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/events",
@@ -340,8 +341,8 @@ _ONTOLOGY_SYSTEM_MCPS = [
         },
         "input_schema": {
             "fields": [
-                {"name": "object_name", "type": "string", "description": "物件類型：LOT / TOOL / APC / SPC / DC / RECIPE（可選，不帶則查全部）", "required": False},
-                {"name": "object_id",   "type": "string", "description": "物件 ID（配合 object_name），e.g. EQP-01、LOT-0001（可選）", "required": False},
+                {"name": "object_name", "type": "string", "description": "篩選維度：只能填 'TOOL' 或 'LOT'。TOOL=依機台篩選，LOT=依批次篩選。⚠️ 不要填 SPC/APC/DC — 這不是物件類型篩選。不帶則查全廠。", "required": False},
+                {"name": "object_id",   "type": "string", "description": "配合 object_name 的 ID。TOOL 時填 EQP-XX (e.g. EQP-01)，LOT 時填 LOT-XXXX (e.g. LOT-0001)", "required": False},
                 {"name": "since",       "type": "string", "description": "⚠️ 字串格式：'24h' | '7d' | '14d' | '30d' | '2w'。預設 '7d'", "required": False},
             ]
         },
