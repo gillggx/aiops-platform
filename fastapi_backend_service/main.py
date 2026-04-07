@@ -1103,6 +1103,10 @@ async def _seed_data() -> None:
 # ---------------------------------------------------------------------------
 
 
+# Module-level task refs to prevent GC from killing background tasks
+_bg_tasks: list = []
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s v%s", settings.APP_NAME, settings.APP_VERSION)
@@ -1127,9 +1131,10 @@ async def lifespan(app: FastAPI):
         await load_all_jobs_into_scheduler(db)
         await load_schedule_patrols_into_scheduler(db)
         break
-    # v18: Event-Driven Poller
+    # v18: Event-Driven Poller — stored in module-level list to prevent GC
     from app.services.event_poller_service import run_event_poller
     _poller_task = asyncio.create_task(run_event_poller(interval=30))
+    _bg_tasks.append(_poller_task)
     logger.info("v18 EventPoller started (interval=30s)")
     # v2.0: NATS OOC Event Subscriber (only if NATS is configured and reachable)
     from app.services.nats_subscriber_service import start_nats_subscriber, stop_nats_subscriber
