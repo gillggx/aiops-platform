@@ -13,8 +13,8 @@ import type { AIOpsReportContract } from "aiops-contract";
 // ── Navigation structure ──────────────────────────────────────────────────────
 
 const OPS_ITEMS = [
-  { href: "/",                   label: "Dashboard",        icon: "📊" },
   { href: "/alarms",             label: "Alarm Center",     icon: "🔔" },
+  { href: "/",                   label: "Dashboard",        icon: "📊" },
 ];
 
 const KNOWLEDGE_ITEMS = [

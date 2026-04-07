@@ -1116,7 +1116,7 @@ async def lifespan(app: FastAPI):
     logger.info("Startup seeding complete")
     # Phase 11: start the proactive inspection scheduler
     from app.scheduler import start_scheduler, stop_scheduler
-    await start_scheduler(base_url=f"http://127.0.0.1:{settings.PORT if hasattr(settings, 'PORT') else 8000}")
+    await start_scheduler(base_url=f"http://127.0.0.1:{getattr(settings, 'PORT', 8001)}")
     logger.info("APScheduler started")
     # AIOps: start cron scheduler FIRST, then load persisted jobs
     from app.services.cron_scheduler_service import get_scheduler, load_all_jobs_into_scheduler

@@ -47,7 +47,7 @@ def _build_standard_payload(event: Dict[str, Any], event_type_name: str) -> Dict
     """Normalise a Simulator event dict → v18 Standard Event Payload."""
     return {
         "event_type":   event_type_name,
-        "equipment_id": event.get("equipmentID") or event.get("eqpID") or event.get("equipment_id", ""),
+        "equipment_id": event.get("toolID") or event.get("equipmentID") or event.get("eqpID") or event.get("equipment_id", ""),
         "lot_id":       event.get("lotID") or event.get("lot_id", ""),
         "step":         event.get("step", ""),
         "event_time":   event.get("eventTime") or event.get("event_time", ""),
@@ -139,9 +139,17 @@ async def _poll_once(
     max_seen = last_seen
 
     for ev_time, ev in new_events:
-        # Match event to a known event_type by name
-        ev_type_name = ev.get("eventType") or ev.get("event_type", "")
-        ev_type_id   = event_type_map.get(ev_type_name)
+        # Determine logical event type name:
+        # Simulator emits TOOL_EVENT/LOT_EVENT with spc_status field.
+        # Map spc_status=OOC → "OOC" event type for Auto-Patrol matching.
+        raw_type = ev.get("eventType") or ev.get("event_type", "")
+        spc_status = ev.get("spc_status", "")
+        if spc_status == "OOC":
+            ev_type_name = "OOC"
+        else:
+            ev_type_name = raw_type
+
+        ev_type_id = event_type_map.get(ev_type_name)
         if not ev_type_id:
             # Unknown event type — skip silently
             continue

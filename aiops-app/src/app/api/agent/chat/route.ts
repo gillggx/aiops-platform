@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-const AGENT_BASE_URL = process.env.AGENT_BASE_URL ?? "http://localhost:8000";
+const AGENT_BASE_URL = process.env.AGENT_BASE_URL ?? process.env.FASTAPI_BASE_URL ?? "http://localhost:8000";
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN ?? "dev-token";
 
 /**
