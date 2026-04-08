@@ -561,6 +561,67 @@ Step {len(steps)} is the LAST step and MUST end with _findings = {{"condition_me
                 yield _sse({"type": "error", "error": f"Phase 2b 步驟 {step_id} 失敗: {exc}"})
                 return
 
+        # ── Phase 3: Self-Test — auto try-run and validate ────────────────
+        yield _sse({"type": "self_test", "status": "running"})
+
+        try:
+            from app.services.skill_executor_service import SkillExecutorService, build_mcp_executor
+            from app.config import get_settings as _get_settings
+            test_executor = SkillExecutorService(
+                skill_repo=self._repo,
+                mcp_executor=build_mcp_executor(self._db, sim_url=_get_settings().ONTOLOGY_SIM_URL),
+            )
+            test_payload = {"equipment_id": "EQP-01", "lot_id": "", "step": "", "event_time": ""}
+            test_result = await test_executor.try_run_draft(
+                steps=assembled_steps,
+                mock_payload=test_payload,
+                output_schema=output_schema,
+            )
+
+            if test_result.success:
+                # Validate output structure
+                findings = test_result.findings
+                validation_issues = []
+                if findings:
+                    if not hasattr(findings, "condition_met") and not isinstance(findings, dict):
+                        validation_issues.append("missing condition_met")
+                    outputs = findings.outputs if hasattr(findings, "outputs") else (findings.get("outputs") if isinstance(findings, dict) else {})
+                    if not outputs:
+                        validation_issues.append("outputs is empty")
+                    else:
+                        schema_keys = {s["key"] for s in output_schema}
+                        output_keys = set(outputs.keys()) if isinstance(outputs, dict) else set()
+                        missing = schema_keys - output_keys
+                        if missing:
+                            validation_issues.append(f"missing output keys: {missing}")
+
+                if validation_issues:
+                    yield _sse({"type": "self_test", "status": "warning", "issues": validation_issues})
+                else:
+                    yield _sse({"type": "self_test", "status": "pass"})
+            else:
+                # Try-run failed — attempt auto-fix
+                error_msg = test_result.error or "Unknown error"
+                yield _sse({"type": "self_test", "status": "fail", "error": error_msg})
+                yield _sse({"type": "self_test", "status": "fixing"})
+
+                fix_result = await self._fix_steps_with_error(
+                    description=body.auto_check_description,
+                    steps=assembled_steps,
+                    error_message=error_msg,
+                    output_schema=output_schema,
+                    confirmed_section=confirmed_section,
+                )
+                if fix_result:
+                    assembled_steps = fix_result
+                    yield _sse({"type": "self_test", "status": "fixed", "steps_count": len(assembled_steps)})
+                else:
+                    yield _sse({"type": "self_test", "status": "fix_failed"})
+
+        except Exception as exc:
+            logger.warning("Self-test failed (non-blocking): %s", exc)
+            yield _sse({"type": "self_test", "status": "error", "error": str(exc)})
+
         yield _sse({
             "type": "done",
             "result": {
@@ -570,6 +631,76 @@ Step {len(steps)} is the LAST step and MUST end with _findings = {{"condition_me
                 "output_schema": output_schema,
             },
         })
+
+    async def _fix_steps_with_error(
+        self,
+        description: str,
+        steps: List[dict],
+        error_message: str,
+        output_schema: List[dict],
+        confirmed_section: str,
+    ) -> Optional[List[dict]]:
+        """Try to fix generated steps using error context. Returns fixed steps or None."""
+        current_code = "\n".join(
+            f"# --- {s['step_id']}: {s['nl_segment']} ---\n{s['python_code']}"
+            for s in steps
+        )
+
+        out_keys = ", ".join(f'"{s["key"]}": <value>' for s in output_schema)
+
+        fix_prompt = f"""\
+You are a factory AI expert. The generated Python code FAILED during self-test.
+Fix ALL steps and output corrected Python code.
+Output raw Python code for each step, separated by "# === STEP_BREAK ===" marker.
+
+Rule description: {description}
+
+{confirmed_section}
+
+Current BROKEN code:
+{current_code}
+
+ERROR:
+{error_message}
+
+RULES:
+- execute_mcp returns a LIST (not dict) for get_process_events
+- Field names are camelCase: lotID, toolID, eventTime, spc_status (NOT lot_id, tool_id, timestamp)
+- spc_status values: 'PASS' or 'OOC' only (NOT 'FAIL')
+- Last step MUST end with _findings = {{"condition_met": <bool>, "summary": "...", "outputs": {{{out_keys}}}, "impacted_lots": [...]}}
+
+Fix the code now. Output {len(steps)} code blocks separated by # === STEP_BREAK ===
+"""
+
+        try:
+            resp = await self._llm.create(
+                system=fix_prompt,
+                messages=[{"role": "user", "content": "修正程式碼。"}],
+                max_tokens=4096,
+            )
+            raw = resp.text.strip()
+            raw = re.sub(r"```(?:python)?\s*|\s*```", "", raw, flags=re.MULTILINE).strip()
+            raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+            parts = re.split(r"#\s*===\s*STEP_BREAK\s*===", raw)
+            parts = [p.strip() for p in parts if p.strip()]
+
+            if not parts:
+                return None
+
+            fixed = []
+            for i, s in enumerate(steps):
+                code = parts[i] if i < len(parts) else parts[-1]
+                fixed.append({
+                    "step_id": s["step_id"],
+                    "nl_segment": s["nl_segment"],
+                    "python_code": code,
+                    "expected_result": s.get("expected_result", ""),
+                })
+            return fixed
+        except Exception as exc:
+            logger.warning("_fix_steps_with_error failed: %s", exc)
+            return None
 
     async def generate_steps(self, body: GenerateRuleStepsRequest) -> GenerateRuleStepsResponse:
         """Non-streaming wrapper — collects stream events and returns final result."""
@@ -621,8 +752,8 @@ Required output format:
 {{
   "reasoning": "brief explanation of what data is needed and why",
   "mcp_calls": [
-    {{"mcp_name": "get_process_history", "purpose": "取機台最近10次製程清單", "params_template": {{"toolID": "{{{{equipment_id}}}}", "limit": 10}}}},
-    {{"mcp_name": "get_process_context", "purpose": "取每筆製程的APC參數", "params_template": {{"targetID": "{{{{lot_id}}}}", "step": "{{{{step}}}}", "objectName": "APC"}}}}
+    {{"mcp_name": "get_process_events", "purpose": "取機台最近製程事件清單", "params_template": {{"toolID": "{{{{equipment_id}}}}", "since": "7d"}}}},
+    {{"mcp_name": "get_process_info", "purpose": "取某批次某站的完整製程資料(含DC/SPC/APC/RECIPE)", "params_template": {{"lotID": "{{{{lot_id}}}}", "step": "{{{{step}}}}"}}}}
   ]
 }}"""
 
@@ -665,9 +796,9 @@ Required output format (NO python_code — plan only):
 {{
   "proposal_steps": ["Plain English step 1", "Plain English step 2", ...],
   "steps": [
-    {{"step_id": "step1", "nl_segment": "取機台最近 N 次製程清單"}},
-    {{"step_id": "step2", "nl_segment": "用 for loop 逐筆取各批次 APC 參數"}},
-    {{"step_id": "step3", "nl_segment": "計算偏移趨勢並判斷 OOC 條件，輸出診斷結果"}}
+    {{"step_id": "step1", "nl_segment": "取機台最近 N 次製程清單", "expected_result": "list of dicts with keys: eventTime, lotID, toolID, step, spc_status. At least 1 record."}},
+    {{"step_id": "step2", "nl_segment": "用 for loop 逐筆取各批次 APC 參數", "expected_result": "list of dicts with APC parameter values. Same length as step1 OOC records."}},
+    {{"step_id": "step3", "nl_segment": "計算偏移趨勢並判斷 OOC 條件，輸出診斷結果", "expected_result": "_findings dict with condition_met, summary, outputs, impacted_lots"}}
   ],
   "input_schema": [
     {{"key": "equipment_id", "type": "string", "required": true, "description": "目標機台 ID"}}

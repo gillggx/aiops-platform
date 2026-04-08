@@ -344,6 +344,18 @@ class SkillExecutorService:
             return SkillExecuteResponse(success=False, step_results=step_results, error=error)
 
         findings = self._build_findings(raw_findings, output_schema)
+
+        # Runtime output validation — log warnings if output doesn't match schema
+        if findings and output_schema:
+            schema_keys = {s["key"] for s in output_schema}
+            output_keys = set(findings.outputs.keys()) if findings.outputs else set()
+            missing = schema_keys - output_keys
+            if missing:
+                logger.warning(
+                    "Skill id=%d output validation: missing keys %s (expected: %s, got: %s)",
+                    skill_id, missing, schema_keys, output_keys,
+                )
+
         return SkillExecuteResponse(
             success=True,
             step_results=step_results,
