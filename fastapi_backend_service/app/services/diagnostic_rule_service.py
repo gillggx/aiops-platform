@@ -701,6 +701,19 @@ PATROL EXECUTION CONTEXT (very important):
                             elif isinstance(table_data, (int, float)):
                                 issues.append(f"output '{s['key']}' 是數字而非 table — 應該是 list of dicts")
 
+                    # Check chart x_key values — if x_key contains "time", values should be ISO strings not integers
+                    for s in output_schema:
+                        if s.get("type") == "line_chart" and s["key"] in (outputs or {}):
+                            chart_data = outputs[s["key"]]
+                            x_key = s.get("x_key", "")
+                            if isinstance(chart_data, list) and chart_data and isinstance(chart_data[0], dict):
+                                first_x = chart_data[0].get(x_key)
+                                if "time" in x_key.lower() and isinstance(first_x, (int, float)):
+                                    issues.append(
+                                        f"output '{s['key']}' chart x_key='{x_key}' 的值是數字({first_x}) — "
+                                        f"應該是 ISO8601 時間字串（用 event.get('eventTime')）"
+                                    )
+
                     # Check schema keys match
                     schema_keys = {s["key"] for s in output_schema}
                     output_keys = set(outputs.keys()) if isinstance(outputs, dict) else set()
@@ -975,10 +988,21 @@ Required output format (NO python_code — plan only):
                 if s.get("type") in ("line_chart", "bar_chart", "scatter_chart"):
                     xk = s.get("x_key", "index")
                     yks = s.get("y_keys", ["value"])
+                    # Use realistic example values based on x_key name
+                    if "time" in xk.lower():
+                        x_example_1 = '"2026-04-08T12:00:00"'
+                        x_example_2 = '"2026-04-08T12:05:00"'
+                        x_note = f'  ⚠️ "{xk}" must be ISO8601 timestamp STRING from eventTime (NOT integer index)'
+                    else:
+                        x_example_1 = "0"
+                        x_example_2 = "1"
+                        x_note = ""
                     chart_hints.append(
-                        f'  "{s["key"]}": must be a LIST of dicts, e.g. '
-                        f'[{{"{xk}": 0, "{yks[0]}": 1.23}}, {{"{xk}": 1, "{yks[0]}": 1.45}}, ...]'
+                        f'  "{s["key"]}": must be a LIST of FLAT dicts, e.g. '
+                        f'[{{"{xk}": {x_example_1}, "{yks[0]}": 1.23}}, {{"{xk}": {x_example_2}, "{yks[0]}": 1.45}}, ...]'
                     )
+                    if x_note:
+                        chart_hints.append(x_note)
             chart_note = ""
             if chart_hints:
                 chart_note = "\nCHART DATA FORMAT — outputs for chart-type keys MUST be a list of dicts:\n" + "\n".join(chart_hints)
