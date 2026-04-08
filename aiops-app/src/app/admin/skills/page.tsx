@@ -395,12 +395,30 @@ export default function DiagnosticRulesPage() {
                 addLog(`  ✗ ${event.step_id}: ${event.error}`, false);
               }
               break;
+            case "self_test": {
+              const st = event.status as string;
+              if (st === "running") addLog("🔍 Self-test 執行中...");
+              else if (st === "pass") addLog("✅ Self-test 通過", true);
+              else if (st === "warning") addLog(`⚠️ Self-test 警告: ${(event.issues as string[])?.join("; ")}`, false);
+              else if (st === "fail") addLog(`❌ Self-test 失敗: ${event.error}`, false);
+              else if (st === "error") addLog(`❌ Self-test 錯誤: ${event.error}`, false);
+              break;
+            }
             case "done": {
               const r = event.result as Record<string, unknown>;
               const steps    = (r.steps_mapping  as StepMapping[]) ?? [];
               const proposal = (r.proposal_steps as string[]) ?? steps.map(s => s.nl_segment);
               const inSchema  = (r.input_schema   as InputSchemaField[]) ?? [];
               const outSchema = (r.output_schema  as OutputSchemaField[]) ?? [];
+
+              // Show self-test result from done event
+              const selfTest = r.self_test as Record<string, unknown> | undefined;
+              if (selfTest) {
+                const st = selfTest.status as string;
+                if (st === "fail") setError(`Self-test 失敗: ${selfTest.error || "try-run 執行失敗"}。請用下方 feedback 修正。`);
+                else if (st === "warning") setError(`Self-test 警告: ${(selfTest.issues as string[])?.join("; ")}`);
+              }
+
               if (steps.length === 0) {
                 setError("AI 未能生成診斷步驟，請修改描述後重試");
                 setPhase("idle");

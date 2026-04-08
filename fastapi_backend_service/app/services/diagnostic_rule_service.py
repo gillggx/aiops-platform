@@ -741,6 +741,7 @@ PATROL EXECUTION CONTEXT (very important):
                 "steps_mapping": assembled_steps,
                 "input_schema": input_schema,
                 "output_schema": output_schema,
+                "self_test": self_test_report,
             },
         })
 
