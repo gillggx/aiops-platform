@@ -81,9 +81,11 @@ async def _process_event(
         if not skills:
             return 0
 
+        from app.services.skill_executor_service import build_mcp_executor
+        from app.config import get_settings as _get_settings
         executor = SkillExecutorService(
             skill_repo=skill_repo,
-            mcp_executor=None,
+            mcp_executor=build_mcp_executor(db, sim_url=_get_settings().ONTOLOGY_SIM_URL),
         )
 
         from app.repositories.auto_patrol_repository import AutoPatrolRepository
