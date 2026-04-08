@@ -27,7 +27,7 @@ import { useMemo } from "react";
 
 export type OutputSchemaField = {
   key: string;
-  type: string;        // "scalar"|"table"|"badge"|"line_chart"|"bar_chart"|"scatter_chart"
+  type: string;        // "scalar"|"table"|"badge"|"line_chart"|"bar_chart"|"scatter_chart"|"multi_line_chart"
   label: string;
   unit?: string;
   description?: string;
@@ -35,6 +35,8 @@ export type OutputSchemaField = {
   // Chart-specific
   x_key?: string;
   y_keys?: string[];
+  y_key?: string;      // single y key for multi_line_chart
+  group_key?: string;  // group data by this key → one chart per group
   highlight_key?: string;  // boolean field → mark true rows with red markers
 };
 
@@ -158,6 +160,98 @@ function ChartOutputRenderer({
   );
 }
 
+// ── Multi-chart renderer (one chart per group) ────────────────────────────────
+
+function MultiChartRenderer({
+  val, field,
+}: {
+  val: unknown;
+  field: OutputSchemaField;
+}): React.ReactElement {
+  const rows = Array.isArray(val) ? val as Record<string, unknown>[] : [];
+  const groupKey = field.group_key ?? "group";
+  const xKey = field.x_key ?? "index";
+  const yKey = field.y_key ?? field.y_keys?.[0] ?? "value";
+  const highlightKey = field.highlight_key;
+
+  // Group data by group_key
+  const groups = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>[]>();
+    for (const row of rows) {
+      const group = String(row[groupKey] ?? "default");
+      if (!map.has(group)) map.set(group, []);
+      map.get(group)!.push(row);
+    }
+    return Array.from(map.entries());
+  }, [rows, groupKey]);
+
+  if (groups.length === 0) {
+    return <span style={{ color: "#a0aec0", fontSize: 12 }}>（無資料）</span>;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {groups.map(([groupName, groupRows], gi) => {
+        const xs = groupRows.map((r, i) => r[xKey] ?? i);
+        const ys = groupRows.map(r => r[yKey]);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const traces: any[] = [
+          {
+            x: xs,
+            y: ys,
+            name: yKey,
+            type: "scatter",
+            mode: "lines+markers",
+            line: { color: SERIES_COLORS[gi % SERIES_COLORS.length], width: 2 },
+            marker: { color: SERIES_COLORS[gi % SERIES_COLORS.length], size: 5 },
+          },
+        ];
+
+        // Highlight points
+        if (highlightKey) {
+          const hlRows = groupRows.filter(r => r[highlightKey]);
+          if (hlRows.length > 0) {
+            traces.push({
+              x: hlRows.map((r, i) => r[xKey] ?? i),
+              y: hlRows.map(r => r[yKey]),
+              name: "異常點",
+              type: "scatter",
+              mode: "markers",
+              marker: { color: "#e53e3e", size: 10, symbol: "circle-open" },
+            });
+          }
+        }
+
+        return (
+          <div key={groupName} style={{ background: "#f7f8fc", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0" }}>
+              {groupName}
+            </div>
+            <Plot
+              data={traces as any}
+              layout={{
+                autosize: true,
+                height: 200,
+                margin: { l: 45, r: 16, t: 8, b: 40 },
+                paper_bgcolor: "transparent",
+                plot_bgcolor: "#f7f8fc",
+                font: { family: "Inter, sans-serif", size: 10 },
+                showlegend: false,
+                xaxis: { gridcolor: "#e2e8f0", title: xKey },
+                yaxis: { gridcolor: "#e2e8f0" },
+              }}
+              config={{ responsive: true, displayModeBar: false }}
+              style={{ width: "100%" }}
+              useResizeHandler
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Primitive value renderer ───────────────────────────────────────────────────
 
 function PrimitiveValue({ val }: { val: unknown }): React.ReactElement {
@@ -216,6 +310,10 @@ export function RenderOutputValue({
   // Chart types
   if ((type === "line_chart" || type === "bar_chart" || type === "scatter_chart") && field) {
     return <ChartOutputRenderer val={val} field={field} />;
+  }
+
+  if (type === "multi_line_chart" && field) {
+    return <MultiChartRenderer val={val} field={field} />;
   }
 
   if (type === "badge") {

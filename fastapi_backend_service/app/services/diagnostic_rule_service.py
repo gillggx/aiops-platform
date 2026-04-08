@@ -90,7 +90,9 @@ OUTPUT SCHEMA TYPES — pick the most appropriate type for each output field:
   scalar        → {"key": "ooc_count",   "type": "scalar",       "label": "OOC次數",    "unit": "次"}
   badge         → {"key": "status",      "type": "badge",        "label": "診斷結論"}
   table         → {"key": "records",     "type": "table",        "label": "記錄",       "columns": [{"key": "eventTime","label":"時間","type":"string"}, {"key": "lotID","label":"批號","type":"string"}, ...]}
-  line_chart    → {"key": "spc_trend",   "type": "line_chart",   "label": "SPC管制圖",  "x_key": "timestamp", "y_keys": ["value","ucl","lcl"], "highlight_key": "is_ooc"}
+  line_chart    → {"key": "spc_trend",   "type": "line_chart",   "label": "SPC管制圖",  "x_key": "eventTime", "y_keys": ["value","ucl","lcl"], "highlight_key": "is_ooc"}
+  multi_line_chart → {"key": "param_trends", "type": "multi_line_chart", "label": "參數趨勢", "group_key": "parameter_name", "x_key": "eventTime", "y_key": "value", "highlight_key": "is_rising"}
+    ⭐ 多組 chart — 用 group_key 分組，每組畫一張獨立的 chart。適合動態數量的 parameters。
 
 ⚠️ CRITICAL — table 和 chart 的 data format 規則：
   - table: _findings.outputs["records"] 必須是 list of FLAT dicts
@@ -881,10 +883,10 @@ Required output format:
 {{
   "reasoning": "brief explanation of what data is needed and why",
   "mcp_calls": [
-    {{"mcp_name": "get_process_events", "purpose": "取機台最近製程事件清單", "params_template": {{"toolID": "{{{{equipment_id}}}}", "since": "7d"}}}},
-    {{"mcp_name": "get_process_info", "purpose": "取某批次某站的完整製程資料(含DC/SPC/APC/RECIPE)", "params_template": {{"lotID": "{{{{lot_id}}}}", "step": "{{{{step}}}}"}}}}
+    {{"mcp_name": "<pick from catalog>", "purpose": "<why>", "params_template": {{"toolID": "{{{{equipment_id}}}}"}}}}
   ]
-}}"""
+}}
+Only include MCPs that are truly needed. One MCP can return enough data — don't add extras."""
 
         resp = await self._llm.create(
             system=system_prompt,
@@ -916,10 +918,10 @@ INPUT vars available in Python scope: equipment_id, lot_id, step, event_time, _i
 
 CRITICAL RULES:
 - Maximum 3-5 steps. NEVER more than 5.
-- Use FOR LOOPS inside a step for repetitive work (e.g. "iterate each process record to fetch APC context").
-- Do NOT create one step per record — that defeats the purpose of loops.
-- Good: "step2: loop through each process record and fetch APC parameters"
-- Bad: "step2: fetch APC for lot 1", "step3: fetch APC for lot 2", ...
+- Call each MCP ONCE, outside of loops. Then loop through the results to process/filter.
+  ✅ "step1: fetch all process events" → "step2: loop through results to extract APC params"
+  ❌ "step2: for each event, call get_process_info" (same API called N times = wasteful)
+- MCP calls are expensive. One call returns all data for the given toolID — no need to call per-record.
 
 {_OUTPUT_SCHEMA_GUIDE}
 
