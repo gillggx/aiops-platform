@@ -88,14 +88,20 @@ async def _build_mcp_catalog_from_db(db) -> str:
 _OUTPUT_SCHEMA_GUIDE = """\
 OUTPUT SCHEMA TYPES — pick the most appropriate type for each output field:
   scalar        → {"key": "ooc_count",   "type": "scalar",       "label": "OOC次數",    "unit": "次"}
-  table         → {"key": "records",     "type": "table",        "label": "記錄",       "columns": [{"key": "value","label":"量測值","type":"float"}, ...]}
   badge         → {"key": "status",      "type": "badge",        "label": "診斷結論"}
-  line_chart    → {"key": "spc_trend",   "type": "line_chart",   "label": "SPC管制圖",  "x_key": "index", "y_keys": ["value","ucl","lcl"], "highlight_key": "is_ooc"}
-  bar_chart     → {"key": "ooc_by_tool", "type": "bar_chart",    "label": "各機台OOC次數", "x_key": "tool", "y_keys": ["ooc_count"]}
-  scatter_chart → {"key": "correlation", "type": "scatter_chart","label": "相關性",     "x_key": "param_a", "y_keys": ["param_b"]}
+  table         → {"key": "records",     "type": "table",        "label": "記錄",       "columns": [{"key": "eventTime","label":"時間","type":"string"}, {"key": "lotID","label":"批號","type":"string"}, ...]}
+  line_chart    → {"key": "spc_trend",   "type": "line_chart",   "label": "SPC管制圖",  "x_key": "timestamp", "y_keys": ["value","ucl","lcl"], "highlight_key": "is_ooc"}
 
-Chart data in _findings.outputs must be a list of dicts matching x_key + y_keys.
-RULE: When user description mentions 圖/chart/trend/趨勢/管制圖/分佈, you MUST include the matching chart type in output_schema."""
+⚠️ CRITICAL — table 和 chart 的 data format 規則：
+  - table: _findings.outputs["records"] 必須是 list of FLAT dicts
+    ✅ [{"eventTime": "2026-...", "lotID": "LOT-001", "spc_status": "PASS"}, ...]
+    ❌ {"headers": [...], "rows": [...]}  ← 錯！
+    ❌ [["2026-...", "LOT-001", "PASS"], ...]  ← 錯！
+  - table dict keys 必須與 output_schema columns 的 key 完全一致（camelCase）
+  - line_chart: _findings.outputs["spc_trend"] 必須是 list of FLAT dicts
+    ✅ [{"timestamp": "2026-...", "value": 14.5, "ucl": 17.5, "lcl": 12.5}, ...]
+    ❌ {"parameter_name": "...", "data_points": [...]}  ← 錯！nested 結構
+  - RULE: 如果 user 提到 圖/chart/trend/趨勢 → 必須用 line_chart type"""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

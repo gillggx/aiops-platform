@@ -257,9 +257,11 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "    RECIPE: {objectID, parameters: {etch_time_s, pressure, ...}}\n"
             "  }\n"
             "\n"
+            "⚠️ 帶 toolID 就會回傳該機台所有 process 的完整資料（一次呼叫），不需要在 for loop 裡逐筆呼叫。\n"
+            "\n"
             "使用範例：\n"
             "  查某筆 OOC 的根因 → lotID='LOT-0001', step='STEP_045'\n"
-            "  查機台的 SPC 管制圖詳細數據 → toolID='EQP-01', since='24h'"
+            "  查機台所有 process 的完整資料 → toolID='EQP-01', since='7d'（一次呼叫，回多筆）"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/process/info",
