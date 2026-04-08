@@ -665,16 +665,24 @@ PATROL EXECUTION CONTEXT (very important):
                     if not outputs:
                         issues.append("outputs 為空 — 可能 MCP 呼叫失敗或 field name 錯誤")
 
-                    # Check if table-type outputs have real values (not all None/—)
+                    # Check table-type outputs: format + values
                     for s in output_schema:
                         if s.get("type") == "table" and s["key"] in (outputs or {}):
                             table_data = outputs[s["key"]]
-                            if isinstance(table_data, list) and table_data:
+
+                            # Wrong format: dict with headers/rows instead of list of dicts
+                            if isinstance(table_data, dict) and ("headers" in table_data or "rows" in table_data):
+                                issues.append(f"output '{s['key']}' 格式錯誤 — table type 應該是 list of dicts，不是 {{headers, rows}} 結構")
+                            elif isinstance(table_data, list) and table_data:
                                 first_row = table_data[0]
                                 if isinstance(first_row, dict):
-                                    null_count = sum(1 for v in first_row.values() if v is None or v == "" or v == "—")
+                                    null_count = sum(1 for v in first_row.values() if v is None or v == "" or v == "—" or v == "N/A")
                                     if null_count > len(first_row) * 0.5:
                                         issues.append(f"output '{s['key']}' table 大部分欄位為空 — field name 可能不正確（應用 camelCase: eventTime, lotID, toolID）")
+                                elif isinstance(first_row, list):
+                                    issues.append(f"output '{s['key']}' 格式錯誤 — table type 應該是 list of dicts，不是 list of lists")
+                            elif isinstance(table_data, (int, float)):
+                                issues.append(f"output '{s['key']}' 是數字而非 table — 應該是 list of dicts")
 
                     # Check schema keys match
                     schema_keys = {s["key"] for s in output_schema}
