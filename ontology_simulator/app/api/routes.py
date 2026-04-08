@@ -828,11 +828,17 @@ async def reset_simulation():
     """
     db = get_db()
     dropped = []
-    for col_name in ("object_snapshots", "events"):
+    for col_name in ("object_snapshots", "events", "tool_events"):
         await db[col_name].drop()
         dropped.append(col_name)
+
+    # Reset all lots to step 1 + Waiting
+    await db.lots.update_many({}, {"$set": {"current_step": 1, "status": "Waiting", "cycle": 0}})
+    # Reset all tools to Idle
+    await db.tools.update_many({}, {"$set": {"status": "Idle"}})
+
     return {
         "status":  "ok",
         "dropped": dropped,
-        "message": "Simulation data reset. Simulator will regenerate MES data on next cycle.",
+        "message": "Simulation data reset. All lots reset to STEP_001. Restart simulator to begin fresh.",
     }

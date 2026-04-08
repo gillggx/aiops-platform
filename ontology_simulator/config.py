@@ -9,8 +9,8 @@ TOTAL_RECIPES = 20
 # ── Timing (seconds; dev defaults — prod: set PROCESSING_MIN/MAX to 480/600) ─
 HEARTBEAT_MIN_SEC  = float(os.getenv("HEARTBEAT_MIN",   "5"))
 HEARTBEAT_MAX_SEC  = float(os.getenv("HEARTBEAT_MAX",   "10"))
-PROCESSING_MIN_SEC = float(os.getenv("PROCESSING_MIN",  "300"))   # 5 min
-PROCESSING_MAX_SEC = float(os.getenv("PROCESSING_MAX",  "360"))   # 6 min
+PROCESSING_MIN_SEC = float(os.getenv("PROCESSING_MIN",  "180"))   # 3 min
+PROCESSING_MAX_SEC = float(os.getenv("PROCESSING_MAX",  "300"))   # 5 min
 HOLD_PROBABILITY   = float(os.getenv("HOLD_PROBABILITY", "0.05"))   # 5% equipment hold
 
 # ── Lot Recycling ─────────────────────────────────────────────
