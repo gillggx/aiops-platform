@@ -549,8 +549,10 @@ PATROL EXECUTION CONTEXT (very important):
             yield _sse({"type": "fetch", "mcp_name": mcp_name, "status": "fetching"})
             try:
                 mock_params = _resolve_mock_params(mc.get("params_template", {}))
+                logger.info("Phase 1.5 sample fetch: mcp=%s, params=%s", mcp_name, mock_params)
                 result = await mcp_executor(mcp_name, mock_params)
                 shape = _shape_str(result)
+                logger.info("Phase 1.5 sample result: mcp=%s, type=%s, len=%s", mcp_name, type(result).__name__, len(result) if isinstance(result, (list, dict)) else "N/A")
                 sample_responses[mcp_name] = result
                 yield _sse({"type": "fetch", "mcp_name": mcp_name, "status": "ok", "shape": shape})
             except Exception as exc:
