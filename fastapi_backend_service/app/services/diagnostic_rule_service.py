@@ -267,11 +267,13 @@ def _resolve_mock_params(params_template: dict) -> dict:
     """
     result = {}
     for k, v in params_template.items():
-        if isinstance(v, str) and v.startswith("{") and v.endswith("}") and len(v) > 2:
-            placeholder = v[1:-1]
-            result[k] = _MOCK_PARAMS.get(placeholder, v)
-        else:
-            result[k] = v
+        if isinstance(v, str):
+            # Strip single or double braces: {{equipment_id}} or {equipment_id} → equipment_id
+            stripped = v.strip("{}")
+            if stripped and stripped != v and stripped in _MOCK_PARAMS:
+                result[k] = _MOCK_PARAMS[stripped]
+                continue
+        result[k] = v
 
     # Ensure event MCPs always have a target — prevents 400 and guarantees real sample
     if not result.get("toolID") and not result.get("lotID"):
