@@ -1129,7 +1129,7 @@ class MCPDefinitionService:
                         url = get_settings().SERVER_BASE_URL + endpoint_url
                     else:
                         url = endpoint_url
-                    params_dict: Dict[str, Any] = _normalize_params(raw_data if isinstance(raw_data, dict) else {})
+                    params_dict: Dict[str, Any] = _normalize_params(raw_data if isinstance(raw_data, dict) else {}, mcp_name=sys_mcp.name)
                     resolved_url2, query_params2 = _resolve_url_params(url, params_dict)
                     try:
                         async with httpx.AsyncClient(timeout=30.0) as client:

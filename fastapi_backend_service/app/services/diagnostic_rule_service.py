@@ -1009,6 +1009,19 @@ Required output format (NO python_code — plan only):
             if chart_hints:
                 chart_note = "\nCHART DATA FORMAT — outputs for chart-type keys MUST be a list of dicts:\n" + "\n".join(chart_hints)
 
+            # Build table column key hints so LLM uses exact same keys
+            table_hints = []
+            for s in output_schema:
+                if s.get("type") == "table" and s.get("columns"):
+                    col_keys = [c["key"] for c in s["columns"]]
+                    table_hints.append(
+                        f'  "{s["key"]}": must be a LIST of dicts with EXACT keys: {col_keys}\n'
+                        f'    Example: [{{' + ', '.join(f'"{k}": ...' for k in col_keys[:4]) + '}}, ...]'
+                    )
+            table_note = ""
+            if table_hints:
+                table_note = "\nTABLE DATA FORMAT — dict keys MUST match output_schema columns exactly:\n" + "\n".join(table_hints)
+
             last_step_note = f"""
 CRITICAL — this is the LAST step. End with exactly:
 _findings = {{
@@ -1016,7 +1029,7 @@ _findings = {{
     "summary": "<one sentence conclusion in Chinese>",
     "outputs": {{{out_keys}}},
     "impacted_lots": [<lot_id_str>] if condition_met else []
-}}{chart_note}"""
+}}{chart_note}{table_note}"""
 
         system_prompt = f"""\
 You are a factory AI expert. Write Python code for ONE diagnostic step.
