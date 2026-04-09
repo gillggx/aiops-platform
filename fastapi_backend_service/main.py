@@ -211,7 +211,7 @@ _MOCK_DATA_SUBJECTS = [
 _ONTOLOGY_SYSTEM_MCPS = [
     # ── v3 MCP Design: 3-Layer Architecture ────────────────────────────────────
     # Layer 1: get_process_summary  — 聚合統計（快速概覽）
-    # Layer 2: get_process_info     — 範圍調查（event + object data + auto charts）
+    # Layer 2: get_process_info     — 範圍調查（event + object data）
     # Layer 3: query_object_timeseries — 深潛（單一參數長時序）
     {
         "name": "get_process_summary",
@@ -255,16 +255,16 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "【Layer 2 — 範圍調查 + 自動畫圖】取得 event 列表 + 完整物件資料。\n"
             "\n"
             "⭐ 這是你畫圖、做根因分析、看詳細數據的主力工具。\n"
-            "⭐ 帶 objectName='SPC' → 自動產生 5 張 SPC 管制圖（_charts），不需要再呼叫其他工具。\n"
+            "⭐ 帶 objectName='SPC' → 回傳完整的 SPC 管制圖數據（5 種 chart type: xbar/r/s/p/c）。\n"
             "\n"
             "回傳：{\n"
             "  total,\n"
             "  events: [{eventTime, lotID, toolID, step, spc_status, SPC?: {...}, DC?: {...}, ...}],\n"
-            "  _charts?: [...]   // objectName=SPC 時自動產生 5 張管制圖 chart DSL\n"
+            "  // SPC 數據含 charts: {xbar_chart: {value,ucl,lcl,is_ooc}, r_chart, s_chart, p_chart, c_chart}\n"
             "}\n"
             "\n"
             "objectName 篩選（強烈建議帶）：\n"
-            "  'SPC'    → 只回 SPC 管制圖資料 + 自動產生 _charts\n"
+            "  'SPC'    → 只回 SPC 管制圖資料（5 種 chart type 的 value/ucl/lcl/is_ooc）\n"
             "  'DC'     → 只回 DC sensor 資料\n"
             "  'APC'    → 只回 APC 參數\n"
             "  'RECIPE' → 只回 RECIPE 參數\n"
@@ -288,7 +288,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
                 {"name": "toolID",     "type": "string", "description": "機台 ID，e.g. EQP-01", "required": False},
                 {"name": "lotID",      "type": "string", "description": "批次 ID，e.g. LOT-0001", "required": False},
                 {"name": "step",       "type": "string", "description": "站點代碼，e.g. STEP_020", "required": False},
-                {"name": "objectName", "type": "string", "description": "物件篩選：SPC / DC / APC / RECIPE。帶 SPC 會自動產生 _charts", "required": False},
+                {"name": "objectName", "type": "string", "description": "物件篩選：SPC / DC / APC / RECIPE", "required": False},
                 {"name": "eventTime",  "type": "string", "description": "ISO8601 精確定位某次 process（可選）", "required": False},
                 {"name": "since",      "type": "string", "description": "時間窗 '24h'/'7d'/'30d'", "required": False},
             ]

@@ -488,7 +488,6 @@ async def get_process_info(
     """Query process events + object data, flattened.
 
     Returns [{eventTime, lotID, toolID, step, spc_status, SPC?: {...}, DC?: {...}, ...}]
-    When objectName=SPC, auto-generates _charts (5 SPC control charts as chart DSL).
     """
     if not toolID and not lotID and not step:
         raise HTTPException(400, "Must provide toolID, lotID, or step (at least one)")
@@ -546,83 +545,7 @@ async def get_process_info(
 
         results.append(row)
 
-    # Auto-build _charts when objectName=SPC
-    charts = []
-    if objectName and objectName.upper() == "SPC" and results:
-        charts = _build_spc_charts(results)
-
-    resp: dict = {"total": len(results), "events": results}
-    if charts:
-        resp["_charts"] = charts
-    return resp
-
-
-def _build_spc_charts(events: list) -> list:
-    """Build 5 SPC chart DSL objects from process_info events."""
-    chart_names = ["xbar_chart", "r_chart", "s_chart", "p_chart", "c_chart"]
-    chart_titles = {"xbar_chart": "X-bar", "r_chart": "R", "s_chart": "S", "p_chart": "P", "c_chart": "C"}
-    charts = []
-
-    # Sort chronologically for charting
-    sorted_events = sorted(events, key=lambda e: str(e.get("eventTime", "")))
-
-    for chart_name in chart_names:
-        data = []
-        ucl_val = None
-        lcl_val = None
-        cl_values = []
-
-        for ev in sorted_events:
-            spc = ev.get("SPC") or {}
-            chart = spc.get("charts", spc).get(chart_name) if isinstance(spc.get("charts", spc), dict) else {}
-            if not chart:
-                # Try flat SPC structure
-                chart = spc.get(chart_name, {})
-            if not isinstance(chart, dict) or "value" not in chart:
-                continue
-
-            val = chart["value"]
-            data.append({
-                "eventTime": str(ev.get("eventTime", "")),
-                "lotID": ev.get("lotID", ""),
-                "toolID": ev.get("toolID", ""),
-                "value": val,
-                "ucl": chart.get("ucl"),
-                "lcl": chart.get("lcl"),
-                "is_ooc": chart.get("is_ooc", False),
-            })
-            if ucl_val is None and chart.get("ucl") is not None:
-                ucl_val = chart["ucl"]
-            if lcl_val is None and chart.get("lcl") is not None:
-                lcl_val = chart["lcl"]
-            if val is not None:
-                cl_values.append(val)
-
-        if not data:
-            continue
-
-        cl_val = sum(cl_values) / len(cl_values) if cl_values else 0
-        rules = []
-        if ucl_val is not None:
-            rules.append({"value": ucl_val, "label": "UCL", "style": "danger"})
-        if lcl_val is not None:
-            rules.append({"value": lcl_val, "label": "LCL", "style": "danger"})
-        rules.append({"value": round(cl_val, 4), "label": "CL", "style": "center"})
-
-        title = chart_titles.get(chart_name, chart_name)
-        step_label = data[0].get("toolID", "") if data else ""
-
-        charts.append({
-            "type": "line",
-            "title": f"{title} Chart ({step_label})" if step_label else f"{title} Chart",
-            "data": data,
-            "x": "eventTime",
-            "y": ["value"],
-            "rules": rules,
-            "highlight": {"field": "is_ooc", "eq": True},
-        })
-
-    return charts
+    return {"total": len(results), "events": results}
 
 
 # ── Unified Object Timeseries Query ──────────────────────────

@@ -1077,9 +1077,7 @@ class MCPDefinitionService:
                 "_raw_dataset": raw_list,
                 "_is_processed": False,
             }
-            # Pass through _charts from MCP response (e.g. get_process_info with objectName=SPC)
-            if isinstance(response_json, dict) and response_json.get("_charts"):
-                output_data["_charts"] = response_json["_charts"]
+            # Note: chart generation is handled by ChartMiddleware (not by data source)
             return MCPTryRunResponse(
                 success=True,
                 output_data=output_data,

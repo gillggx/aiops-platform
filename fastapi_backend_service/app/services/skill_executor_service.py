@@ -362,11 +362,16 @@ class SkillExecutorService:
                     skill_id, missing, schema_keys, output_keys,
                 )
 
+        # ★ Chart Middleware — auto-generate charts from output_schema types
+        from app.services.chart_middleware import process as chart_process
+        auto_charts = chart_process(findings.outputs, output_schema) if findings and output_schema else []
+        all_charts = (charts or []) + auto_charts
+
         return SkillExecuteResponse(
             success=True,
             step_results=step_results,
             findings=findings,
-            charts=charts,
+            charts=all_charts,
         )
 
     async def try_run_draft(
@@ -390,9 +395,16 @@ class SkillExecutorService:
             )
 
         findings = self._build_findings(raw_findings, output_schema or [])
+
+        # ★ Chart Middleware
+        from app.services.chart_middleware import process as chart_process
+        auto_charts = chart_process(findings.outputs, output_schema or []) if findings else []
+        all_charts = (_charts or []) + auto_charts
+
         return SkillTryRunResponse(
             success=True,
             step_results=step_results,
             findings=findings,
+            charts=all_charts,
             total_elapsed_ms=elapsed_ms,
         )

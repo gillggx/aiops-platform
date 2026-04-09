@@ -908,32 +908,8 @@ def _build_render_card(
             },
         }
 
-        # Auto-charts from get_process_info(objectName=SPC) → build contract
-        mcp_charts = od.get("_charts") or result.get("_charts")
-        if mcp_charts and isinstance(mcp_charts, list):
-            from app.services.agent_orchestrator_v2.nodes.tool_execute import _chart_intent_to_vega_lite
-            _notify_chart_rendered(result, mcp_charts)
-            visualization = []
-            for i, chart in enumerate(mcp_charts):
-                try:
-                    vega_spec = _chart_intent_to_vega_lite(chart)
-                    visualization.append({
-                        "id": f"chart_{i}",
-                        "type": "vega-lite",
-                        "title": chart.get("title", f"Chart {i+1}"),
-                        "spec": vega_spec,
-                    })
-                except Exception:
-                    pass
-            if visualization:
-                card["chart_intents"] = mcp_charts
-                card["contract"] = {
-                    "$schema": "aiops-report/v1",
-                    "summary": f"{mcp_name} — {len(visualization)} 張管制圖",
-                    "evidence_chain": [],
-                    "visualization": visualization,
-                    "suggested_actions": [],
-                }
+        # Note: chart generation is handled by ChartMiddleware in SkillExecutorService,
+        # not by MCP render card. Raw MCP data flows to Skills which produce charts.
 
         return card
 

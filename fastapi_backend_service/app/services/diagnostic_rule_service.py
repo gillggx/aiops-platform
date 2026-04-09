@@ -87,23 +87,30 @@ async def _build_mcp_catalog_from_db(db) -> str:
 
 _OUTPUT_SCHEMA_GUIDE = """\
 OUTPUT SCHEMA TYPES — pick the most appropriate type for each output field:
-  scalar        → {"key": "ooc_count",   "type": "scalar",       "label": "OOC次數",    "unit": "次"}
-  badge         → {"key": "status",      "type": "badge",        "label": "診斷結論"}
-  table         → {"key": "records",     "type": "table",        "label": "記錄",       "columns": [{"key": "eventTime","label":"時間","type":"string"}, {"key": "lotID","label":"批號","type":"string"}, ...]}
-  line_chart    → {"key": "spc_trend",   "type": "line_chart",   "label": "SPC管制圖",  "x_key": "eventTime", "y_keys": ["value","ucl","lcl"], "highlight_key": "is_ooc"}
+  scalar           → {"key": "ooc_count",   "type": "scalar",          "label": "OOC次數",    "unit": "次"}
+  badge            → {"key": "status",      "type": "badge",           "label": "診斷結論"}
+  table            → {"key": "records",     "type": "table",           "label": "記錄",       "columns": [{"key": "eventTime","label":"時間","type":"string"}, {"key": "lotID","label":"批號","type":"string"}, ...]}
+  line_chart       → {"key": "trend",       "type": "line_chart",      "label": "趨勢圖",    "x_key": "eventTime", "y_keys": ["value"], "highlight_key": "is_ooc"}
+  spc_chart        → {"key": "spc_data",    "type": "spc_chart",       "label": "SPC管制圖",  "group_key": "chart_type", "x_key": "eventTime", "value_key": "value", "ucl_key": "ucl", "lcl_key": "lcl", "highlight_key": "is_ooc"}
+    ⭐ SPC 專用 — data 裡用 group_key 區分 chart type (xbar_chart, r_chart, s_chart, p_chart, c_chart)
+    ⭐ Middleware 會自動拆成 5 張獨立圖，每張各自 scale + UCL/LCL → 你不需要手動 assign _chart/_charts
   multi_line_chart → {"key": "param_trends", "type": "multi_line_chart", "label": "參數趨勢", "group_key": "parameter_name", "x_key": "eventTime", "y_key": "value", "highlight_key": "is_rising"}
-    ⭐ 多組 chart — 用 group_key 分組，每組畫一張獨立的 chart。適合動態數量的 parameters。
+    ⭐ 多組 chart — 用 group_key 分組，每組畫一張獨立的 chart。
 
-⚠️ CRITICAL — table 和 chart 的 data format 規則：
-  - table: _findings.outputs["records"] 必須是 list of FLAT dicts
+⚠️ CHART MIDDLEWARE — 圖表由後端 middleware 自動產生：
+  - 你只需要把 data 放進 _findings.outputs["key"]
+  - output_schema 宣告 type 為 chart 類型（line_chart / spc_chart / multi_line_chart）
+  - Middleware 會根據 output_schema 自動把 data → 圖表
+  - ⚠️ 不需要手動 assign _chart 或 _charts 變數（除非你有特殊需求）
+
+⚠️ DATA FORMAT 規則：
+  - table: _findings.outputs["key"] 必須是 list of FLAT dicts
     ✅ [{"eventTime": "2026-...", "lotID": "LOT-001", "spc_status": "PASS"}, ...]
-    ❌ {"headers": [...], "rows": [...]}  ← 錯！
-    ❌ [["2026-...", "LOT-001", "PASS"], ...]  ← 錯！
-  - table dict keys 必須與 output_schema columns 的 key 完全一致（camelCase）
-  - line_chart: _findings.outputs["spc_trend"] 必須是 list of FLAT dicts
-    ✅ [{"timestamp": "2026-...", "value": 14.5, "ucl": 17.5, "lcl": 12.5}, ...]
-    ❌ {"parameter_name": "...", "data_points": [...]}  ← 錯！nested 結構
-  - RULE: 如果 user 提到 圖/chart/trend/趨勢 → 必須用 line_chart type"""
+    ❌ {"headers": [...], "rows": [...]}
+  - spc_chart: list of FLAT dicts with group_key 區分 chart type
+    ✅ [{"eventTime": "...", "chart_type": "xbar_chart", "value": 14.5, "ucl": 17.5, "lcl": 12.5, "is_ooc": false}, ...]
+  - line_chart: list of FLAT dicts
+    ✅ [{"eventTime": "...", "value": 14.5}, ...]"""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
