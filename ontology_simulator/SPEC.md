@@ -49,16 +49,18 @@ Production 切換只需改 endpoint_url，程式碼不變。**
 
 ## 4. API Endpoints
 
-### 4.1 Core Query APIs
+### 4.1 Core Query APIs（MCP v3 三層架構）
 
-| Method | Path | 說明 |
-|--------|------|------|
-| `GET` | `/api/v1/context/query` | 製程物件快照查詢（targetID + step + objectName + eventTime?） |
-| `GET` | `/api/v1/events` | 製程事件列表（toolID / lotID / limit / dedup） |
-| `GET` | `/api/v1/object-info` | 物件 metadata（step + objectName → available fields） |
-| `GET` | `/api/v1/status` | 模擬器系統狀態摘要 |
-| `GET` | `/api/v1/lots` | 批次列表（optional status filter） |
-| `GET` | `/api/v1/tools` | 機台列表 + 狀態 |
+| Method | Path | Layer | 說明 |
+|--------|------|-------|------|
+| `GET` | `/api/v1/process/summary` | **L1** | 聚合統計 — OOC rates、per-tool breakdown、recent OOC events。MongoDB aggregation pipeline，毫秒回應。 |
+| `GET` | `/api/v1/process/info` | **L2** | 範圍調查 — 新增 `objectName` 參數（SPC/DC/APC/RECIPE）。回應扁平化（不再有 `{event, objects}` 巢狀）。`objectName=SPC` 自動產生 `_charts`（xbar/r/s/p/c 5 種 chart DSL）。 |
+| `GET` | `/api/v1/context/query` | — | 製程物件快照查詢（targetID + step + objectName + eventTime?） |
+| `GET` | `/api/v1/events` | — | ⚠️ **Deprecated** — 被 `/process/info` 取代，保留向後相容 |
+| `GET` | `/api/v1/object-info` | — | ⚠️ **Deprecated** — 不再需要（data IS the schema），保留向後相容 |
+| `GET` | `/api/v1/status` | — | 模擬器系統狀態摘要 |
+| `GET` | `/api/v1/lots` | — | 批次列表（optional status filter） |
+| `GET` | `/api/v1/tools` | — | 機台列表 + 狀態 |
 
 ### 4.2 Analytics APIs
 
@@ -67,7 +69,7 @@ Production 切換只需改 endpoint_url，程式碼不變。**
 | `GET` | `/api/v1/analytics/step-spc` | 站點級 SPC 管制圖（step + chart_name） |
 | `GET` | `/api/v1/analytics/step-dc` | 站點級 DC 時序（step + parameter） |
 | `GET` | `/api/v1/analytics/history` | 物件快照歷史序列 |
-| `POST` | `/api/v1/objects/query` | 物件參數時序查詢（object_name + parameter + step + conditions） |
+| `POST` | `/api/v1/objects/query` | **L3** 物件參數時序查詢（object_name + parameter + step + conditions） |
 | `GET` | `/api/v1/objects/schema/{object_name}` | 物件 parameter 目錄 |
 
 ### 4.3 Equipment & Lot Trace

@@ -59,7 +59,7 @@ fastapi_backend_service/
 
 | Model | Table | 說明 |
 |-------|-------|------|
-| `SkillDefinitionModel` | `skill_definitions` | Diagnostic Rule / Auto-Patrol 嵌入技能 / Legacy Skill |
+| `SkillDefinitionModel` | `skill_definitions` | 統一 Skill（source + binding_type 決定用途） |
 | `MCPDefinitionModel` | `mcp_definitions` | System MCP（資料源端點）+ Custom MCP |
 | `AutoPatrolModel` | `auto_patrols` | 自動巡檢定義（綁定 Skill + Alarm 規則） |
 | `AlarmModel` | `alarms` | Auto-Patrol 產生的告警（severity + evidence） |
@@ -79,7 +79,7 @@ fastapi_backend_service/
 | `ExecutionLogModel` | `execution_logs` | Skill 執行歷史（duration, status, output） |
 | `NatsEventLogModel` | `nats_event_log` | NATS 事件接收紀錄 |
 
-### 4.3 Skill 資料結構
+### 4.3 Skill 資料結構（Unified Skill Architecture）
 
 所有 source 類型共用相同 schema：
 
@@ -89,9 +89,20 @@ input_schema:   [{key, type, required, description}]
 output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?}]
 ```
 
+**source 欄位**（誰建立的）：
+- `source="skill"` — 使用者透過 My Skills 建立（LLM 生成或手動）
 - `source="rule"` — AI 兩階段生成（Phase 2a: step plan → Phase 2b: per-step code）
 - `source="auto_patrol"` — 手動定義，嵌在 patrol 實體內
 - `source="legacy"` — 通用 Skill
+
+**binding_type 欄位**（綁定到什麼觸發方式）：
+- `binding_type="none"` — My Skill / chat 中使用，不綁定觸發器
+- `binding_type="event"` — 綁定為 Auto-Patrol（event-driven 觸發）
+- `binding_type="alarm"` — 綁定為 Diagnostic Rule（alarm-driven 觸發）
+
+**Skill 生命週期**：
+1. Agent 對話分析 → 使用者點擊「儲存為我的 Skill」→ `source=skill, binding_type=none`
+2. My Skill 可升級為 Auto-Patrol（`binding_type=event`）或 Diagnostic Rule（`binding_type=alarm`）
 
 ## 5. API Routers
 
@@ -111,6 +122,10 @@ output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?}]
 | `GET/POST` | `/diagnostic-rules` | Diagnostic Rule CRUD |
 | `POST` | `/diagnostic-rules/generate-steps/stream` | SSE 串流 LLM 生成 steps |
 | `POST` | `/diagnostic-rules/{id}/try-run` | Sandbox 試跑 |
+| `GET/POST/PATCH/DELETE` | `/my-skills` | My Skills CRUD |
+| `POST` | `/my-skills/generate-steps/stream` | SSE 串流 LLM 生成 Skill steps |
+| `POST` | `/my-skills/{id}/try-run` | My Skill sandbox 試跑 |
+| `POST` | `/my-skills/{id}/bind` | 升級 Skill binding_type（none → event/alarm） |
 | `GET/POST/PATCH` | `/auto-patrols` | Auto-Patrol CRUD |
 | `POST` | `/auto-patrols/{id}/trigger` | 手動觸發巡檢 |
 | `GET/POST/PATCH` | `/mcp-definitions` | MCP 定義 CRUD |
@@ -122,7 +137,7 @@ output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?}]
 | Method | Path | 說明 |
 |--------|------|------|
 | `POST` | `/analysis/run` | 執行 Agent 生成的 ad-hoc 分析腳本 |
-| `POST` | `/analysis/promote` | 將 ad-hoc 分析提升為 Diagnostic Rule |
+| `POST` | `/analysis/promote` | 將 ad-hoc 分析儲存為 My Skill（source=skill, binding_type=none） |
 
 ### 5.4 Memory
 
@@ -220,17 +235,28 @@ Feature flag `?engine=v2` 切換。
 | `auth_service.py` | JWT token 生成 + 驗證 |
 | `sandbox_service.py` | 安全沙盒執行環境（exec + 受限 globals） |
 
-## 7. System MCP 定義（Seed）
+## 7. System MCP 定義（Seed）— MCP v3 三層架構
 
-啟動時自動 seed 到 DB（create or update by name，刪除不在 canonical list 的舊記錄）：
+啟動時自動 seed 到 DB（create or update by name，刪除不在 canonical list 的舊記錄）。
+
+### 7.1 三層資料 MCP（v3 架構）
+
+Agent 透過三個層級的 MCP 漸進式深入調查：
+
+| Layer | MCP Name | Endpoint | 說明 |
+|-------|----------|----------|------|
+| **L1 — Summary** | `get_process_summary` | `GET /process/summary` | 聚合統計（OOC rates、per-tool breakdown、recent OOC）。MongoDB aggregation pipeline，毫秒回應。適合全廠範圍掃描。 |
+| **L2 — Investigation** | `get_process_info` | `GET /process/info` | 範圍調查 + 自動 SPC charts。新增 `objectName` 參數可篩選 SPC/DC/APC/RECIPE。回應扁平化（不再有 `{event, objects}` 巢狀）。`objectName=SPC` 自動產生 `_charts`（xbar/r/s/p/c 5 種 chart DSL）。**一次呼叫取代過去 8 次呼叫。** |
+| **L3 — Deep Dive** | `query_object_timeseries` | `POST /objects/query` | 單一參數深度時序 + 3σ OOC（unchanged） |
+
+**已退役 MCP**：
+- `get_process_events` — 被 `get_process_info` 取代
+- `get_object_info` — 不再需要（data IS the schema）
+
+### 7.2 輔助 MCP
 
 | MCP Name | Endpoint | 說明 |
 |----------|----------|------|
-| `get_process_context` | `GET /context/query` | 製程物件快照（DC/SPC/APC/EC/RECIPE） |
-| `get_process_history` | `GET /events` | 製程歷史事件列表 |
-| `get_object_info` | `GET /object-info` | 物件 metadata（available fields） |
-| `list_recent_events` | `GET /events` | 最近事件（object_name/object_id 介面） |
-| `query_object_timeseries` | `POST /objects/query` | 物件參數時序 + 3σ OOC |
 | `list_tools` | `GET /tools` | 廠內機台清單 |
 | `get_simulation_status` | `GET /status` | 模擬器系統狀態 |
 

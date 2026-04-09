@@ -33,9 +33,11 @@ AIOps 平台的 **Frontend 應用層**。同時扮演兩個角色：
 
 ```
 OPERATIONS CENTER
+  ├── Alarm Center         /alarms
   └── Dashboard            /
 
 KNOWLEDGE STUDIO
+  ├── ⭐ My Skills         /admin/my-skills        ← NEW
   ├── Auto-Patrols         /admin/auto-patrols
   └── Diagnostic Rules     /admin/skills
 
@@ -43,7 +45,8 @@ ADMIN
   ├── Skills               /system/skills
   ├── Agent Memory         /admin/memories
   ├── Data Sources         /system/data-sources
-  └── Event Registry       /system/event-registry
+  ├── Event Registry       /system/event-registry
+  └── System Monitor       /system/monitor
 ```
 
 ### 3.1 Operations Center
@@ -66,6 +69,7 @@ Dashboard layout：
 
 | Route | Page | 說明 |
 |-------|------|------|
+| `/admin/my-skills` | **My Skills** | 使用者個人 Skill 管理 — 列表、LLM 生成、編輯、Try-Run、刪除、升級（→ Auto-Patrol 或 Diagnostic Rule） |
 | `/admin/auto-patrols` | Auto-Patrols | 自動巡檢排程管理 |
 | `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成） |
 
@@ -86,7 +90,7 @@ Dashboard layout：
 |-----------|------|
 | `AppShell.tsx` | 頂層 layout — Topbar + Unified Sidebar (3 sections) + Main + AI Copilot |
 | `Topbar.tsx` | 頂部導覽列 |
-| `AnalysisPanel.tsx` | 中央分析結果面板（Contract 渲染，full-page overlay） |
+| `AnalysisPanel.tsx` | 中央分析結果面板（Contract 渲染，full-page overlay）。現在也渲染 Agent chat 中的 charts（contract flow 修正後，圖表從 Copilot 正確傳遞到 AnalysisPanel） |
 
 ### 4.2 AI Copilot（右側面板）
 
@@ -128,7 +132,11 @@ aiops-app 的 API routes 全部是 **proxy** — 轉發到 `fastapi_backend_serv
 | `POST /api/admin/rules/generate-steps/stream` | `POST /api/v1/diagnostic-rules/generate-steps/stream` | SSE Rule 生成 |
 | `GET/POST /api/admin/auto-patrols` | `/api/v1/auto-patrols` | Auto-Patrol CRUD |
 | `GET/POST /api/admin/alarms` | `/api/v1/alarms` | 告警管理 |
-| `POST /api/admin/analysis/promote` | `POST /api/v1/analysis/promote` | 分析提升為 Rule |
+| `POST /api/admin/analysis/promote` | `POST /api/v1/analysis/promote` | 分析儲存為 My Skill |
+| `GET/POST/PATCH/DELETE /api/admin/my-skills` | `/api/v1/my-skills` | My Skills CRUD |
+| `POST /api/admin/my-skills/generate-steps/stream` | `POST /api/v1/my-skills/generate-steps/stream` | SSE My Skill 生成 |
+| `POST /api/admin/my-skills/{id}/try-run` | `POST /api/v1/my-skills/{id}/try-run` | My Skill 試跑 |
+| `POST /api/admin/my-skills/{id}/bind` | `POST /api/v1/my-skills/{id}/bind` | 升級 Skill binding_type |
 | `GET /api/admin/automation/*` | `/api/v1/*` | Automation catch-all |
 | `GET /api/ontology/*` | `/api/v1/ontology/*` | Ontology catch-all |
 | `GET /api/mcp-catalog` | — | 回傳 MCP catalog（from store or catalog.ts） |
