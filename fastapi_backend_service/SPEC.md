@@ -86,7 +86,7 @@ fastapi_backend_service/
 ```
 steps_mapping:  [{step_id, nl_segment, python_code}]
 input_schema:   [{key, type, required, description}]
-output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?}]
+output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?, group_key?, value_key?, ucl_key?, lcl_key?, highlight_key?}]
 ```
 
 **source 欄位**（誰建立的）：
@@ -184,7 +184,7 @@ Feature flag `?engine=v2` 切換。
 - `execute_mcp` → 委派到 `mcp_definition_service.py`
 - Preflight validation（必填參數、format check）
 - render_card 生成（供前端渲染）
-- _chart DSL → Vega-Lite 轉換
+- 呼叫 ChartMiddleware 自動產生 chart DSL（取代過去的手動 _chart 組裝）
 
 ### 6.3 Context Loader
 
@@ -228,12 +228,55 @@ Feature flag `?engine=v2` 切換。
 | Service | 說明 |
 |---------|------|
 | `auto_patrol_service.py` | Auto-Patrol CRUD + manual trigger + 嵌入 Skill 建立 |
+| `chart_middleware.py` | Registry-based 自動圖表生成（output_schema type → chart DSL） |
 | `skill_executor_service.py` | Sandbox 執行 Skill python_code |
 | `cron_scheduler_service.py` | APScheduler cron 排程管理 |
 | `alarm_service.py` | Alarm 建立 + severity 判斷 |
 | `nats_subscriber_service.py` | NATS event bus 訂閱 |
 | `auth_service.py` | JWT token 生成 + 驗證 |
 | `sandbox_service.py` | 安全沙盒執行環境（exec + 受限 globals） |
+
+### 6.8 ChartMiddleware
+
+`chart_middleware.py` — Registry-based 圖表自動生成中間層：
+
+**定位**：LLM 生成的 Skill code 只需在 `_findings.outputs` 放入 raw data，ChartMiddleware 根據 `output_schema` 中的 `type` 欄位自動產生 chart DSL，前端直接渲染。
+
+**架構變更**：
+```
+Before: Simulator → _charts (chart DSL) → Frontend
+         LLM code → _chart manual assign → Frontend
+After:  Simulator → pure data → Backend ChartMiddleware → chart DSL → Frontend
+        LLM code → data in outputs + output_schema type → ChartMiddleware → chart DSL → Frontend
+```
+
+**Built-in Builders**：
+
+| output_schema type | Builder | 說明 |
+|--------------------|---------|------|
+| `spc_chart` | `_build_spc_chart` | 依 `group_key` 拆分為獨立 SPC 管制圖（e.g. xbar/r/s/p/c），每圖獨立 UCL/LCL rule lines |
+| `line_chart` | `_build_line_chart` | 單一折線圖，自動偵測 data 中的 UCL/LCL 加 rule lines |
+| `bar_chart` | `_build_bar_chart` | 長條圖 |
+| `scatter_chart` | `_build_scatter_chart` | 散佈圖 |
+| `multi_line_chart` | `_build_multi_line_chart` | 依 `group_key` 拆分為多張折線圖 |
+
+**spc_chart output_schema 範例**：
+```json
+{"key": "spc_data", "type": "spc_chart", "label": "SPC管制圖",
+ "group_key": "chart_type", "x_key": "eventTime",
+ "value_key": "value", "ucl_key": "ucl", "lcl_key": "lcl", "highlight_key": "is_ooc"}
+```
+
+**擴充方式**：
+```python
+from app.services.chart_middleware import register
+register("heatmap", build_heatmap)
+```
+
+**整合點**：
+- `SkillExecutorService.execute()` — Skill 執行後自動呼叫 `chart_middleware.process()`
+- `SkillExecutorService.try_run_draft()` — Try-Run sandbox 執行後同樣呼叫
+- `analysis.py` (`execute_analysis`) — Agent ad-hoc 分析執行後呼叫
 
 ## 7. System MCP 定義（Seed）— MCP v3 三層架構
 
@@ -246,7 +289,7 @@ Agent 透過三個層級的 MCP 漸進式深入調查：
 | Layer | MCP Name | Endpoint | 說明 |
 |-------|----------|----------|------|
 | **L1 — Summary** | `get_process_summary` | `GET /process/summary` | 聚合統計（OOC rates、per-tool breakdown、recent OOC）。MongoDB aggregation pipeline，毫秒回應。適合全廠範圍掃描。 |
-| **L2 — Investigation** | `get_process_info` | `GET /process/info` | 範圍調查 + 自動 SPC charts。新增 `objectName` 參數可篩選 SPC/DC/APC/RECIPE。回應扁平化（不再有 `{event, objects}` 巢狀）。`objectName=SPC` 自動產生 `_charts`（xbar/r/s/p/c 5 種 chart DSL）。**一次呼叫取代過去 8 次呼叫。** |
+| **L2 — Investigation** | `get_process_info` | `GET /process/info` | 範圍調查。新增 `objectName` 參數可篩選 SPC/DC/APC/RECIPE。回應扁平化（不再有 `{event, objects}` 巢狀）。回傳 pure data，chart 生成由 Backend ChartMiddleware 負責。**一次呼叫取代過去 8 次呼叫。** |
 | **L3 — Deep Dive** | `query_object_timeseries` | `POST /objects/query` | 單一參數深度時序 + 3σ OOC（unchanged） |
 
 **已退役 MCP**：

@@ -54,7 +54,7 @@ Production 切換只需改 endpoint_url，程式碼不變。**
 | Method | Path | Layer | 說明 |
 |--------|------|-------|------|
 | `GET` | `/api/v1/process/summary` | **L1** | 聚合統計 — OOC rates、per-tool breakdown、recent OOC events。MongoDB aggregation pipeline，毫秒回應。 |
-| `GET` | `/api/v1/process/info` | **L2** | 範圍調查 — 新增 `objectName` 參數（SPC/DC/APC/RECIPE）。回應扁平化（不再有 `{event, objects}` 巢狀）。`objectName=SPC` 自動產生 `_charts`（xbar/r/s/p/c 5 種 chart DSL）。 |
+| `GET` | `/api/v1/process/info` | **L2** | 範圍調查 — 新增 `objectName` 參數（SPC/DC/APC/RECIPE）。回應扁平化（不再有 `{event, objects}` 巢狀）。回傳 pure data，不含 `_charts`（chart DSL 生成已移至 Backend ChartMiddleware）。 |
 | `GET` | `/api/v1/context/query` | — | 製程物件快照查詢（targetID + step + objectName + eventTime?） |
 | `GET` | `/api/v1/events` | — | ⚠️ **Deprecated** — 被 `/process/info` 取代，保留向後相容 |
 | `GET` | `/api/v1/object-info` | — | ⚠️ **Deprecated** — 不再需要（data IS the schema），保留向後相容 |
