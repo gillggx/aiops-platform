@@ -68,6 +68,11 @@ async def adapt_events(
         ev_name = event.get("name", "")
         ev_data = event.get("data", {})
 
+        # Debug: log all on_chain_end events to trace node lifecycle
+        if ev_type == "on_chain_end":
+            logger.info("[ADAPTER] on_chain_end name=%s, output_keys=%s",
+                        ev_name, list(ev_data.get("output", {}).keys()) if isinstance(ev_data.get("output"), dict) else type(ev_data.get("output")).__name__)
+
         # ── Node lifecycle events ──────────────────────────────────
         if ev_type == "on_chain_start":
             stage = _STAGE_MAP.get(ev_name)
