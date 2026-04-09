@@ -209,62 +209,74 @@ _MOCK_DATA_SUBJECTS = [
 
 
 _ONTOLOGY_SYSTEM_MCPS = [
-    # ── v2 Ontology System MCPs (simplified: single event per process) ─────────
+    # ── v3 MCP Design: 3-Layer Architecture ────────────────────────────────────
+    # Layer 1: get_process_summary  — 聚合統計（快速概覽）
+    # Layer 2: get_process_info     — 範圍調查（event + object data + auto charts）
+    # Layer 3: query_object_timeseries — 深潛（單一參數長時序）
     {
-        "name": "get_process_events",
+        "name": "get_process_summary",
         "description": (
-            "【製程事件查詢】輕量級查詢 — 回傳 process event 列表，每筆包含 SPC 判定結果。\n"
+            "【Layer 1 — 聚合統計】快速取得 OOC 統計、機台分佈、近期異常。不回傳 raw data。\n"
             "\n"
-            "篩選方式（至少帶一個）：\n"
-            "  - toolID → 查該機台所有事件\n"
-            "  - lotID → 查該批次所有事件\n"
-            "  - step → 查全廠該站點的事件\n"
-            "  - 可組合：toolID + step → 該機台在該站的事件\n"
+            "⭐ 這是你回答「OOC 率多少」「哪些機台有問題」「最近狀況如何」的首選工具。\n"
+            "⭐ 毫秒級回應，可安全用於全廠範圍查詢（不怕資料量大）。\n"
             "\n"
-            "回傳：LIST，每筆欄位（camelCase）：\n"
-            "  eventTime, lotID, toolID, step, recipeID, apcID, spc_status('PASS'|'OOC')\n"
+            "回傳：{\n"
+            "  total_events, ooc_count, ooc_rate,\n"
+            "  by_tool: [{toolID, count, ooc_count}],\n"
+            "  by_step: [{step, count, ooc_count}],\n"
+            "  recent_ooc: [{eventTime, lotID, toolID, step, spc_status}]  // 最近 5 筆 OOC\n"
+            "}\n"
             "\n"
-            "⭐ spc_status 可直接判斷 OOC，不需要 get_process_info。\n"
-            "⚠️ 不含 DC/SPC/APC/RECIPE 詳細資料。需要量測值 → 用 get_process_info。"
+            "使用範例：\n"
+            "  全廠 OOC 狀況 → since='7d'\n"
+            "  STEP_020 OOC 統計 → step='STEP_020', since='7d'\n"
+            "  EQP-01 近況 → toolID='EQP-01', since='24h'\n"
+            "\n"
+            "⚠️ 只回統計數字，不回量測值。需要畫圖或看詳細 → 用 get_process_info。"
         ),
         "api_config": {
-            "endpoint_url": f"{_SIM}/api/v1/process/events",
+            "endpoint_url": f"{_SIM}/api/v1/process/summary",
             "method": "GET",
             "headers": {},
         },
         "input_schema": {
             "fields": [
-                {"name": "toolID",    "type": "string", "description": "機台 ID，e.g. EQP-01", "required": False},
-                {"name": "lotID",     "type": "string", "description": "批次 ID，e.g. LOT-0001", "required": False},
-                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_020。可單獨用（查全廠該 step 的事件）", "required": False},
-                {"name": "eventTime", "type": "string", "description": "ISO8601 精確定位某次 process（可選）", "required": False},
-                {"name": "since",     "type": "string", "description": "時間窗 '24h'/'7d'/'30d'，預設 '7d'", "required": False},
+                {"name": "toolID", "type": "string", "description": "機台 ID，e.g. EQP-01", "required": False},
+                {"name": "lotID",  "type": "string", "description": "批次 ID，e.g. LOT-0001", "required": False},
+                {"name": "step",   "type": "string", "description": "站點代碼，e.g. STEP_020", "required": False},
+                {"name": "since",  "type": "string", "description": "時間窗 '24h'/'7d'/'30d'，預設 '7d'", "required": False},
             ]
         },
     },
     {
         "name": "get_process_info",
         "description": (
-            "【製程完整資料 — 重量級查詢】回傳 event + 所有物件的完整詳細資料。\n"
+            "【Layer 2 — 範圍調查 + 自動畫圖】取得 event 列表 + 完整物件資料。\n"
             "\n"
-            "⚠️ 每筆結果包含 4 類物件的完整資料（DC 30 個 sensor、SPC 5 張管制圖、APC 20 個參數、RECIPE 參數）。\n"
-            "   資料量大，適合深度分析（根因診斷、趨勢分析），不適合只做 OOC 統計。\n"
-            "   如果只需要判斷 OOC → 用 get_process_events（輕量，只有 spc_status）。\n"
+            "⭐ 這是你畫圖、做根因分析、看詳細數據的主力工具。\n"
+            "⭐ 帶 objectName='SPC' → 自動產生 5 張 SPC 管制圖（_charts），不需要再呼叫其他工具。\n"
             "\n"
-            "回傳：LIST of {event, objects}\n"
-            "  event: {eventTime, lotID, toolID, step, recipeID, apcID, spc_status}\n"
-            "  objects: {\n"
-            "    DC: {objectID, parameters: {sensor_01: {value, display_name}, ...}},\n"
-            "    SPC: {objectID, spc_status, charts: {xbar_chart: {value, ucl, lcl, is_ooc}, ...}},\n"
-            "    APC: {objectID, mode, parameters: {etch_time_offset, rf_power_bias, ...}},\n"
-            "    RECIPE: {objectID, parameters: {etch_time_s, pressure, ...}}\n"
-            "  }\n"
+            "回傳：{\n"
+            "  total,\n"
+            "  events: [{eventTime, lotID, toolID, step, spc_status, SPC?: {...}, DC?: {...}, ...}],\n"
+            "  _charts?: [...]   // objectName=SPC 時自動產生 5 張管制圖 chart DSL\n"
+            "}\n"
             "\n"
-            "⚠️ 帶 toolID 就會回傳該機台所有 process 的完整資料（一次呼叫），不需要在 for loop 裡逐筆呼叫。\n"
+            "objectName 篩選（強烈建議帶）：\n"
+            "  'SPC'    → 只回 SPC 管制圖資料 + 自動產生 _charts\n"
+            "  'DC'     → 只回 DC sensor 資料\n"
+            "  'APC'    → 只回 APC 參數\n"
+            "  'RECIPE' → 只回 RECIPE 參數\n"
+            "  不帶     → 回全部 4 種（資料量大，非必要不用）\n"
             "\n"
             "使用範例：\n"
-            "  查某筆 OOC 的根因 → lotID='LOT-0001', step='STEP_045'\n"
-            "  查機台所有 process 的完整資料 → toolID='EQP-01', since='7d'（一次呼叫，回多筆）"
+            "  看 SPC chart → step='STEP_020', objectName='SPC', since='7d'  ← 一步完成 5 張圖\n"
+            "  查 OOC 根因 → lotID='LOT-0007'  ← 一次拿到該 lot 所有 step 的完整資料\n"
+            "  機台 DC 趨勢 → toolID='EQP-01', objectName='DC', since='7d'\n"
+            "\n"
+            "⚠️ 不需要先呼叫其他 MCP 做 discovery，這個 MCP 回傳的資料就包含所有你需要的欄位。\n"
+            "⚠️ 如果只需要統計數字（不需要 raw data）→ 用 get_process_summary 更快。"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/process/info",
@@ -273,73 +285,26 @@ _ONTOLOGY_SYSTEM_MCPS = [
         },
         "input_schema": {
             "fields": [
-                {"name": "toolID",    "type": "string", "description": "機台 ID，e.g. EQP-01。toolID 或 lotID 至少帶一個", "required": False},
-                {"name": "lotID",     "type": "string", "description": "批次 ID，e.g. LOT-0001。toolID 或 lotID 至少帶一個", "required": False},
-                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_020。可單獨用（查全廠該 step）", "required": False},
-                {"name": "eventTime", "type": "string", "description": "ISO8601 精確定位（可選）", "required": False},
-                {"name": "since",     "type": "string", "description": "時間窗 '24h'/'7d'/'30d'，預設 '7d'", "required": False},
-            ]
-        },
-    },
-    {
-        "name": "get_object_info",
-        "description": (
-            "【物件 metadata 查詢】查詢指定 step + objectName 有哪些可用的 fields（charts / parameters）。\n"
-            "objectName: SPC / APC / DC / RECIPE\n"
-            "\n"
-            "回傳：{step, objectName, field_type, available_fields, sample_count}\n"
-            "  - SPC 的 field_type='charts'，available_fields 列出可用的 chart 名稱（xbar_chart, r_chart, ...）\n"
-            "  - APC/DC/RECIPE 的 field_type='parameters'，available_fields 列出可用的參數名稱\n"
-            "\n"
-            "使用時機：\n"
-            "  ① 使用者問「STEP_013 有哪些 SPC charts」→ 先呼叫此 MCP 取得 available_fields\n"
-            "  ② 再用 available_fields 的值去呼叫相關 Skill 或 query_object_timeseries\n"
-            "  ③ 查 APC/DC 有哪些參數名稱 → 同理\n"
-            "⚠️ 不要猜 chart_name 或 parameter name — 一定要先查 get_object_info 取得正確名稱"
-        ),
-        "api_config": {
-            "endpoint_url": f"{_SIM}/api/v1/object-info",
-            "method": "GET",
-            "headers": {},
-        },
-        "input_schema": {
-            "fields": [
-                {"name": "step",       "type": "string", "description": "製程站點代碼，e.g. STEP_013", "required": True},
-                {"name": "objectName", "type": "string", "description": "物件類型：SPC / APC / DC / RECIPE", "required": True},
+                {"name": "toolID",     "type": "string", "description": "機台 ID，e.g. EQP-01", "required": False},
+                {"name": "lotID",      "type": "string", "description": "批次 ID，e.g. LOT-0001", "required": False},
+                {"name": "step",       "type": "string", "description": "站點代碼，e.g. STEP_020", "required": False},
+                {"name": "objectName", "type": "string", "description": "物件篩選：SPC / DC / APC / RECIPE。帶 SPC 會自動產生 _charts", "required": False},
+                {"name": "eventTime",  "type": "string", "description": "ISO8601 精確定位某次 process（可選）", "required": False},
+                {"name": "since",      "type": "string", "description": "時間窗 '24h'/'7d'/'30d'", "required": False},
             ]
         },
     },
     {
         "name": "query_object_timeseries",
         "description": (
-            "【物件參數時序查詢】查詢 APC/DC/SPC/RECIPE 物件的單一參數時序，自動計算 3σ OOC 旗標。\n"
+            "【Layer 3 — 單一參數深潛】查詢特定物件參數的長時間時序，自動計算 3σ OOC 旗標。\n"
             "\n"
-            "回傳：{\n"
-            "  object_name, parameter, total_points,\n"
-            "  stats: {mean, ucl, lcl, std_dev, ooc_count, pass_rate},\n"
-            "  data: [{eventTime, lotID, toolID, value, is_ooc}]\n"
-            "}\n"
+            "⚠️ 日常分析用 get_process_info 就夠了。只在需要「單一參數 30 天趨勢」時才用這個。\n"
             "\n"
-            "object_id 填什麼（很重要）：\n"
-            "  - SPC → 填 step 代碼（從 get_process_events 回傳的 step 欄位取得），e.g. 'STEP_007'\n"
-            "  - APC → 填 APC model ID（從 get_process_events 回傳的 apcID 欄位取得），e.g. 'APC-007'\n"
-            "  - DC  → 填機台 ID，e.g. 'EQP-01'\n"
+            "回傳：{object_name, parameter, total_points, stats: {mean, ucl, lcl, ooc_count}, data: [{eventTime, value, is_ooc}]}\n"
             "\n"
-            "⚠️ 典型流程：先用 get_process_events(toolID=equipment_id) 查到 OOC 記錄的 step，\n"
-            "   再用 query_object_timeseries(object_name='SPC', object_id=step) 查 SPC 時序。\n"
-            "\n"
-            "parameter 格式（注意完整路徑）：\n"
-            "  - SPC：必須用 charts.xbar_chart.value（不是 charts.spc_chart.value）\n"
-            "    可用的 SPC chart names: xbar_chart, r_chart, s_chart, p_chart, c_chart\n"
-            "    UCL/LCL: charts.xbar_chart.ucl / charts.xbar_chart.lcl\n"
-            "  - APC：直接用參數名稱，e.g. rf_power_bias\n"
-            "  - DC：sensor 顯示名稱，e.g. Chamber Press\n"
-            "  ⚠️ 不確定有哪些 parameter → 先呼叫 get_object_info 查詢 available_fields\n"
-            "\n"
-            "使用範例：\n"
-            "  SPC xbar 趨勢圖 → object_name='SPC', object_id='STEP_007', parameter='charts.xbar_chart.value'\n"
-            "  APC drift 監控 → object_name='APC', object_id='APC-007', parameter='rf_power_bias'\n"
-            "  DC 溫度時序 → object_name='DC', object_id='EQP-01', parameter='Chamber Press'"
+            "object_id 填法：SPC→step代碼(STEP_007), APC→model ID(APC-007), DC→機台ID(EQP-01)\n"
+            "parameter 格式：SPC→charts.xbar_chart.value, APC→rf_power_bias, DC→Chamber Press"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/objects/query",
@@ -349,9 +314,9 @@ _ONTOLOGY_SYSTEM_MCPS = [
         "input_schema": {
             "fields": [
                 {"name": "object_name", "type": "string", "description": "物件類型：APC / DC / SPC / RECIPE", "required": True},
-                {"name": "object_id",   "type": "string", "description": "⚠️ SPC 時填 step 代碼 (e.g. STEP_007)，不要填 equipment_id。APC 填 APC model ID (e.g. APC-007)。DC 填 equipment_id (e.g. EQP-01)。", "required": True},
-                {"name": "parameter",   "type": "string", "description": "參數名稱，e.g. rf_power_bias、charts.xbar_chart.value", "required": True},
-                {"name": "since",       "type": "string", "description": "時間窗：'24h' | '7d' | '14d' | '30d'。預設 '7d'", "required": False},
+                {"name": "object_id",   "type": "string", "description": "SPC→step代碼, APC→model ID, DC→機台ID", "required": True},
+                {"name": "parameter",   "type": "string", "description": "參數名稱，e.g. charts.xbar_chart.value", "required": True},
+                {"name": "since",       "type": "string", "description": "時間窗：'24h' | '7d' | '30d'，預設 '7d'", "required": False},
             ]
         },
     },

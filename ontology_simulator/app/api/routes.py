@@ -22,6 +22,19 @@ def _to_naive_utc(dt: datetime) -> datetime:
     return dt
 
 
+def _since_to_cutoff(since: Optional[str]) -> Optional[datetime]:
+    """Convert '24h'/'7d'/'30d' to a datetime cutoff."""
+    if not since:
+        return None
+    from datetime import timedelta
+    now = datetime.utcnow()
+    if since.endswith("h"):
+        return now - timedelta(hours=int(since[:-1]))
+    elif since.endswith("d"):
+        return now - timedelta(days=int(since[:-1]))
+    return None
+
+
 def _clean(doc: dict) -> dict:
     """Remove _id and convert ObjectId values to strings."""
     if doc is None:
@@ -380,19 +393,102 @@ async def get_process_events(
     return docs
 
 
+@router.get("/process/summary")
+async def get_process_summary(
+    toolID:     Optional[str] = Query(None),
+    lotID:      Optional[str] = Query(None),
+    step:       Optional[str] = Query(None),
+    since:      Optional[str] = Query("7d"),
+):
+    """Aggregated process statistics — fast, no raw data.
+
+    Returns event counts, OOC rates, per-tool breakdown, and recent OOC events.
+    Backed by MongoDB aggregation pipeline for O(1) response time.
+    """
+    db = get_db()
+    match: dict = {}
+    if toolID:
+        match["toolID"] = toolID
+    if lotID:
+        match["lotID"] = lotID
+    if step:
+        match["step"] = step.upper()
+
+    # Time window
+    cutoff = _since_to_cutoff(since)
+    if cutoff:
+        match["eventTime"] = {"$gte": cutoff}
+
+    # Aggregation: total, ooc, by_tool
+    pipeline = [
+        {"$match": match},
+        {"$facet": {
+            "totals": [
+                {"$group": {
+                    "_id": None,
+                    "total": {"$sum": 1},
+                    "ooc_count": {"$sum": {"$cond": [{"$eq": ["$spc_status", "OOC"]}, 1, 0]}},
+                }},
+            ],
+            "by_tool": [
+                {"$group": {
+                    "_id": "$toolID",
+                    "count": {"$sum": 1},
+                    "ooc_count": {"$sum": {"$cond": [{"$eq": ["$spc_status", "OOC"]}, 1, 0]}},
+                }},
+                {"$sort": {"ooc_count": -1, "count": -1}},
+                {"$limit": 50},
+            ],
+            "by_step": [
+                {"$group": {
+                    "_id": "$step",
+                    "count": {"$sum": 1},
+                    "ooc_count": {"$sum": {"$cond": [{"$eq": ["$spc_status", "OOC"]}, 1, 0]}},
+                }},
+                {"$sort": {"ooc_count": -1}},
+                {"$limit": 50},
+            ],
+            "recent_ooc": [
+                {"$match": {"spc_status": "OOC"}},
+                {"$sort": {"eventTime": -1}},
+                {"$limit": 5},
+                {"$project": {"_id": 0, "eventTime": 1, "lotID": 1, "toolID": 1, "step": 1, "spc_status": 1}},
+            ],
+        }},
+    ]
+    agg = await db.events.aggregate(pipeline).to_list(length=1)
+    facets = agg[0] if agg else {}
+
+    totals = facets.get("totals", [{}])[0] if facets.get("totals") else {}
+    total = totals.get("total", 0)
+    ooc = totals.get("ooc_count", 0)
+
+    return {
+        "total_events": total,
+        "ooc_count": ooc,
+        "ooc_rate": f"{(ooc / total * 100):.2f}%" if total else "0%",
+        "by_tool": [{"toolID": r["_id"], "count": r["count"], "ooc_count": r["ooc_count"]}
+                     for r in facets.get("by_tool", [])],
+        "by_step": [{"step": r["_id"], "count": r["count"], "ooc_count": r["ooc_count"]}
+                     for r in facets.get("by_step", [])],
+        "recent_ooc": facets.get("recent_ooc", []),
+    }
+
+
 @router.get("/process/info")
 async def get_process_info(
-    toolID:    Optional[str]      = Query(None),
-    lotID:     Optional[str]      = Query(None),
-    step:      Optional[str]      = Query(None),
-    eventTime: Optional[str]      = Query(None),
-    start_time: Optional[str]     = Query(None),
-    limit:     int                = Query(50, ge=1, le=100),
+    toolID:     Optional[str] = Query(None),
+    lotID:      Optional[str] = Query(None),
+    step:       Optional[str] = Query(None),
+    objectName: Optional[str] = Query(None, description="SPC|DC|APC|RECIPE — filter to one object type"),
+    eventTime:  Optional[str] = Query(None),
+    since:      Optional[str] = Query(None, description="Time window: 24h/7d/30d"),
+    limit:      int           = Query(50, ge=1, le=200),
 ):
-    """Query process events + join complete object data (DC/SPC/APC/RECIPE).
+    """Query process events + object data, flattened.
 
-    Same input as /process/events but returns enriched results with full
-    object snapshots joined by lotID + step + eventTime.
+    Returns [{eventTime, lotID, toolID, step, spc_status, SPC?: {...}, DC?: {...}, ...}]
+    When objectName=SPC, auto-generates _charts (5 SPC control charts as chart DSL).
     """
     if not toolID and not lotID and not step:
         raise HTTPException(400, "Must provide toolID, lotID, or step (at least one)")
@@ -411,43 +507,122 @@ async def get_process_info(
             filt["eventTime"] = et
         except ValueError:
             pass
-    if start_time:
-        try:
-            cutoff = datetime.fromisoformat(start_time.replace("Z", "+00:00").split("+")[0])
+    if since:
+        cutoff = _since_to_cutoff(since)
+        if cutoff:
             filt.setdefault("eventTime", {})
             if isinstance(filt["eventTime"], dict):
                 filt["eventTime"]["$gte"] = cutoff
-        except ValueError:
-            pass
 
     cursor = db.events.find(filt, {"_id": 0}).sort("eventTime", -1).limit(limit)
     events = await cursor.to_list(length=limit)
 
     results = []
     for ev in events:
-        # Join object_snapshots by lotID + step + eventTime
-        snap_filt = {
+        row: dict = {
+            "eventTime": ev.get("eventTime"),
+            "lotID": ev.get("lotID"),
+            "toolID": ev.get("toolID"),
+            "step": ev.get("step"),
+            "spc_status": ev.get("spc_status"),
+        }
+
+        # Join object_snapshots
+        snap_filt: dict = {
             "lotID": ev.get("lotID"),
             "step":  ev.get("step"),
             "eventTime": ev.get("eventTime"),
         }
-        snaps = await db.object_snapshots.find(snap_filt, {"_id": 0}).to_list(length=10)
+        if objectName:
+            snap_filt["objectName"] = objectName.upper()
 
-        objects = {}
+        snaps = await db.object_snapshots.find(snap_filt, {"_id": 0}).to_list(length=10)
         for snap in snaps:
             obj_name = snap.get("objectName", "")
-            # Remove internal fields, keep the useful data
             clean = {k: v for k, v in snap.items()
                      if k not in ("eventTime", "lotID", "toolID", "step",
-                                  "objectName", "last_updated_time", "updated_by")}
-            objects[obj_name] = clean
+                                  "objectName", "objectID", "last_updated_time", "updated_by")}
+            row[obj_name] = clean
 
-        results.append({
-            "event": ev,
-            "objects": objects,
+        results.append(row)
+
+    # Auto-build _charts when objectName=SPC
+    charts = []
+    if objectName and objectName.upper() == "SPC" and results:
+        charts = _build_spc_charts(results)
+
+    resp: dict = {"total": len(results), "events": results}
+    if charts:
+        resp["_charts"] = charts
+    return resp
+
+
+def _build_spc_charts(events: list) -> list:
+    """Build 5 SPC chart DSL objects from process_info events."""
+    chart_names = ["xbar_chart", "r_chart", "s_chart", "p_chart", "c_chart"]
+    chart_titles = {"xbar_chart": "X-bar", "r_chart": "R", "s_chart": "S", "p_chart": "P", "c_chart": "C"}
+    charts = []
+
+    # Sort chronologically for charting
+    sorted_events = sorted(events, key=lambda e: str(e.get("eventTime", "")))
+
+    for chart_name in chart_names:
+        data = []
+        ucl_val = None
+        lcl_val = None
+        cl_values = []
+
+        for ev in sorted_events:
+            spc = ev.get("SPC") or {}
+            chart = spc.get("charts", spc).get(chart_name) if isinstance(spc.get("charts", spc), dict) else {}
+            if not chart:
+                # Try flat SPC structure
+                chart = spc.get(chart_name, {})
+            if not isinstance(chart, dict) or "value" not in chart:
+                continue
+
+            val = chart["value"]
+            data.append({
+                "eventTime": str(ev.get("eventTime", "")),
+                "lotID": ev.get("lotID", ""),
+                "toolID": ev.get("toolID", ""),
+                "value": val,
+                "ucl": chart.get("ucl"),
+                "lcl": chart.get("lcl"),
+                "is_ooc": chart.get("is_ooc", False),
+            })
+            if ucl_val is None and chart.get("ucl") is not None:
+                ucl_val = chart["ucl"]
+            if lcl_val is None and chart.get("lcl") is not None:
+                lcl_val = chart["lcl"]
+            if val is not None:
+                cl_values.append(val)
+
+        if not data:
+            continue
+
+        cl_val = sum(cl_values) / len(cl_values) if cl_values else 0
+        rules = []
+        if ucl_val is not None:
+            rules.append({"value": ucl_val, "label": "UCL", "style": "danger"})
+        if lcl_val is not None:
+            rules.append({"value": lcl_val, "label": "LCL", "style": "danger"})
+        rules.append({"value": round(cl_val, 4), "label": "CL", "style": "center"})
+
+        title = chart_titles.get(chart_name, chart_name)
+        step_label = data[0].get("toolID", "") if data else ""
+
+        charts.append({
+            "type": "line",
+            "title": f"{title} Chart ({step_label})" if step_label else f"{title} Chart",
+            "data": data,
+            "x": "eventTime",
+            "y": ["value"],
+            "rules": rules,
+            "highlight": {"field": "is_ooc", "eq": True},
         })
 
-    return results
+    return charts
 
 
 # ── Unified Object Timeseries Query ──────────────────────────
