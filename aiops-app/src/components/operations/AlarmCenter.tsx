@@ -387,7 +387,7 @@ const SEV_OPTS = ["全部", "CRITICAL", "HIGH", "MEDIUM", "LOW"];
 export function AlarmCenter() {
   const [alarms, setAlarms]             = useState<Alarm[]>([]);
   const [loading, setLoading]           = useState(true);
-  const [statusTab, setStatusTab]       = useState<string>("active");
+  const [statusTab, setStatusTab]       = useState<string>("all");
   const [sevFilter, setSevFilter]       = useState("全部");
   const [eqFilter, setEqFilter]         = useState("");
   const [selectedAlarm, setSelectedAlarm] = useState<Alarm | null>(null);
@@ -488,33 +488,12 @@ export function AlarmCenter() {
         </div>
       </div>
 
-      {/* Status tabs + filters */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12 }}>
-        {/* Status tabs */}
-        <div style={{ display: "flex", gap: 2, background: "#f7fafc", borderRadius: 8, padding: 3 }}>
-          {STATUS_TABS.map(t => (
-            <button
-              key={t.key}
-              onClick={() => { setStatusTab(t.key); }}
-              style={{
-                padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
-                background: statusTab === t.key ? "#fff" : "transparent",
-                color: statusTab === t.key ? "#2b6cb0" : "#718096",
-                fontWeight: statusTab === t.key ? 700 : 400,
-                fontSize: 13,
-                boxShadow: statusTab === t.key ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-              }}
-            >
-              {t.label}
-              {t.key === "active" && counts.active > 0 && (
-                <span style={{
-                  marginLeft: 5, background: "#e53e3e", color: "#fff",
-                  fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 8,
-                }}>
-                  {counts.active}
-                </span>
-              )}
-            </button>
+      {/* Filters */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12, gap: 12 }}>
+        {/* Status tabs removed — show all alarms with status column */}
+        <div style={{ display: "none" }}>
+          {/* hidden — kept for backward compat with state */}
+          <button></button>
           ))}
         </div>
 
