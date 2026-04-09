@@ -112,7 +112,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   const {
     selectedEquipment,
     triggerMessage, setTriggerMessage,
-    setContract, setInvestigateMode,
+    contract, setContract,
+    investigateMode, setInvestigateMode,
   } = useAppContext();
 
   function handleContract(c: AIOpsReportContract) {
