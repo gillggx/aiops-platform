@@ -970,7 +970,25 @@ def _build_render_card(
                 if isinstance(stats, dict):
                     payload.update(stats)
             title = ad_data.get("title") or f"{ad_data.get('template', 'analyze_data')} 分析"
-            return {
+
+            # Build AIOpsReportContract when chart exists → AnalysisPanel renders it
+            contract = None
+            if payload.get("plotly"):
+                _notify_chart_rendered(result, [payload["plotly"]])
+                contract = {
+                    "$schema": "aiops-report/v1",
+                    "summary": title,
+                    "evidence_chain": [],
+                    "visualization": [{
+                        "id": "analyze_chart",
+                        "type": "plotly",
+                        "title": title,
+                        "spec": payload["plotly"],
+                    }],
+                    "suggested_actions": [],
+                }
+
+            card: Dict[str, Any] = {
                 "type": "utility",
                 "tool_name": title,
                 "summary": title,
@@ -985,6 +1003,9 @@ def _build_render_card(
                 "analyze_params": tool_input.get("params", {}),
                 "analyze_stats": ad_data.get("stats") or {},
             }
+            if contract:
+                card["contract"] = contract
+            return card
 
     # ── execute_analysis → contract with visualization (analysis panel) ──
     if tool_name == "execute_analysis" and isinstance(result, dict):
@@ -1691,8 +1712,8 @@ class AgentOrchestrator:
                     # the flag is visible when synthesis runs later.
                     if isinstance(result, dict) and result.get("_chart_rendered"):
                         _chart_already_rendered = True
-                    # Capture analysis contract for synthesis event
-                    if render_card and render_card.get("type") == "analysis" and render_card.get("contract"):
+                    # Capture contract from any tool render card (analysis, utility w/ chart)
+                    if render_card and render_card.get("contract"):
                         _analysis_contract = render_card["contract"]
                     done_event: Dict[str, Any] = {
                         "type": "tool_done",
