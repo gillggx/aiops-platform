@@ -69,9 +69,14 @@ async def adapt_events(
         ev_data = event.get("data", {})
 
         # Debug: log all on_chain_end events to trace node lifecycle
+        import sys as _sys
         if ev_type == "on_chain_end":
-            logger.info("[ADAPTER] on_chain_end name=%s, output_keys=%s",
-                        ev_name, list(ev_data.get("output", {}).keys()) if isinstance(ev_data.get("output"), dict) else type(ev_data.get("output")).__name__)
+            _out = ev_data.get("output")
+            _keys = list(_out.keys()) if isinstance(_out, dict) else type(_out).__name__
+            print(f"[ADAPTER] on_chain_end name={ev_name}, output_keys={_keys}", file=_sys.stderr, flush=True)
+            if ev_name == "tool_execute":
+                _rc = (_out or {}).get("render_cards", "MISSING")
+                print(f"[ADAPTER] tool_execute render_cards count={len(_rc) if isinstance(_rc, list) else _rc}, _render_card_index={_render_card_index}", file=_sys.stderr, flush=True)
 
         # ── Node lifecycle events ──────────────────────────────────
         if ev_type == "on_chain_start":
@@ -216,16 +221,13 @@ async def adapt_events(
                         actions.append(promote_action)
                         contract["suggested_actions"] = actions
 
-                import logging as _log
-                _adapter_logger = _log.getLogger("adapter")
+                import sys as _sys2
                 if contract:
                     viz = contract.get("visualization", []) if isinstance(contract, dict) else []
-                    _adapter_logger.info("Adapter synthesis: contract has %d visualizations, %d actions",
-                                        len(viz), len(contract.get("suggested_actions", []) if isinstance(contract, dict) else []))
+                    print(f"[ADAPTER-SYNTH] contract has {len(viz)} visualizations", file=_sys2.stderr, flush=True)
                 else:
-                    _adapter_logger.info("Adapter synthesis: NO contract")
-                _adapter_logger.info("Adapter: _all_chart_intents=%d, _analysis_contract=%s",
-                                     len(_all_chart_intents), bool(_analysis_contract))
+                    print("[ADAPTER-SYNTH] NO contract", file=_sys2.stderr, flush=True)
+                print(f"[ADAPTER-SYNTH] _all_chart_intents={len(_all_chart_intents)}, _analysis_contract={bool(_analysis_contract)}", file=_sys2.stderr, flush=True)
 
                 yield {
                     "type": "synthesis",
