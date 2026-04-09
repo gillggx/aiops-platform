@@ -48,6 +48,7 @@ class DiagnosticRuleResponse(BaseModel):
     visibility: str
     is_active: bool
     source: str
+    binding_type: str = "none"
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime

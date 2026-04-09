@@ -67,16 +67,6 @@ async def adapt_events(
         ev_name = event.get("name", "")
         ev_data = event.get("data", {})
 
-        # Debug: log all on_chain_end events to trace node lifecycle
-        import sys as _sys
-        if ev_type == "on_chain_end":
-            _out = ev_data.get("output")
-            _keys = list(_out.keys()) if isinstance(_out, dict) else type(_out).__name__
-            print(f"[ADAPTER] on_chain_end name={ev_name}, output_keys={_keys}", file=_sys.stderr, flush=True)
-            if ev_name == "tool_execute":
-                _rc = (_out or {}).get("render_cards", "MISSING")
-                print(f"[ADAPTER] tool_execute render_cards count={len(_rc) if isinstance(_rc, list) else _rc}", file=_sys.stderr, flush=True)
-
         # ── Node lifecycle events ──────────────────────────────────
         if ev_type == "on_chain_start":
             stage = _STAGE_MAP.get(ev_name)
@@ -219,14 +209,6 @@ async def adapt_events(
                             promote_action["payload"] = _last_analysis_payload
                         actions.append(promote_action)
                         contract["suggested_actions"] = actions
-
-                import sys as _sys2
-                if contract:
-                    viz = contract.get("visualization", []) if isinstance(contract, dict) else []
-                    print(f"[ADAPTER-SYNTH] contract has {len(viz)} visualizations", file=_sys2.stderr, flush=True)
-                else:
-                    print("[ADAPTER-SYNTH] NO contract", file=_sys2.stderr, flush=True)
-                print(f"[ADAPTER-SYNTH] _all_chart_intents={len(_all_chart_intents)}, _analysis_contract={bool(_analysis_contract)}", file=_sys2.stderr, flush=True)
 
                 yield {
                     "type": "synthesis",

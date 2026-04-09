@@ -48,11 +48,14 @@ export function ContractRenderer({ contract, onAgentMessage, onHandoff }: Props)
     } else if (isHandoffAction(action)) {
       onHandoff?.(action.mcp, action.params);
     } else if ((action as Record<string, unknown>).trigger === "promote_analysis") {
-      // Promote ad-hoc analysis to Diagnostic Rule
+      // Promote ad-hoc analysis to My Skill
       const payload = (action as Record<string, unknown>).payload as Record<string, unknown> | undefined;
-      if (!payload) return;
+      if (!payload) {
+        alert("無法儲存：缺少分析步驟資料");
+        return;
+      }
       const title = (payload.title as string) || "Ad-hoc 分析";
-      const name = prompt("儲存為 Diagnostic Rule\n\n名稱：", title);
+      const name = prompt("儲存為 My Skill\n\n名稱：", title);
       if (!name) return;  // user cancelled
       try {
         const res = await fetch("/api/admin/analysis/promote", {
@@ -60,7 +63,7 @@ export function ContractRenderer({ contract, onAgentMessage, onHandoff }: Props)
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name,
-            description: `從 Ad-hoc 分析 promote：${title}`,
+            description: `從 Agent chat promote：${title}`,
             auto_check_description: title,
             steps_mapping: payload.steps_mapping,
             input_schema: payload.input_schema,
@@ -68,7 +71,7 @@ export function ContractRenderer({ contract, onAgentMessage, onHandoff }: Props)
           }),
         });
         if (res.ok) {
-          alert(`已儲存為 Diagnostic Rule: ${name}\n\n前往 Knowledge Studio → Diagnostic Rules 查看`);
+          alert(`已儲存為 Skill: ${name}\n\n前往 Knowledge Studio → My Skills 查看`);
         } else {
           const err = await res.json().catch(() => ({}));
           alert(`儲存失敗: ${(err as Record<string, string>).message || res.statusText}`);

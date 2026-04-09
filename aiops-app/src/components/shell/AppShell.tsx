@@ -19,6 +19,7 @@ const OPS_ITEMS = [
 ];
 
 const KNOWLEDGE_ITEMS = [
+  { href: "/admin/my-skills",    label: "My Skills",        icon: "⭐" },
   { href: "/admin/auto-patrols", label: "Auto-Patrols",     icon: "🔍" },
   { href: "/admin/skills",       label: "Diagnostic Rules", icon: "🔧" },
 ];

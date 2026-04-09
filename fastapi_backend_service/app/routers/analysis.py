@@ -165,31 +165,27 @@ async def promote_to_rule(
     db: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> StandardResponse:
-    """Save a successful ad-hoc analysis as a permanent Diagnostic Rule.
+    """Save a successful ad-hoc analysis as a user Skill.
 
-    The new rule appears in skill_catalog and /admin/skills. Agent will
-    use execute_skill for it next time instead of regenerating code.
+    The new Skill appears in skill_catalog (Agent's <skill_catalog>) and
+    /admin/my-skills page. Agent will use execute_skill for it next time
+    instead of regenerating code.
     """
-    from app.services.diagnostic_rule_service import DiagnosticRuleService
-    from app.schemas.diagnostic_rule import DiagnosticRuleCreate
-
-    svc = DiagnosticRuleService(
-        repo=SkillDefinitionRepository(db),
-        db=db,
-    )
-
-    create_body = DiagnosticRuleCreate(
-        name=body.name,
-        description=body.description,
-        auto_check_description=body.auto_check_description or body.description,
-        steps_mapping=body.steps_mapping,
-        input_schema=body.input_schema,
-        output_schema=body.output_schema,
-        visibility="public",
-    )
-
-    result = await svc.create(create_body, created_by=current_user.id)
+    repo = SkillDefinitionRepository(db)
+    obj = await repo.create({
+        "name": body.name,
+        "description": body.description,
+        "auto_check_description": body.auto_check_description or body.description,
+        "steps_mapping": body.steps_mapping,
+        "input_schema": body.input_schema,
+        "output_schema": body.output_schema,
+        "source": "skill",
+        "binding_type": "none",
+        "trigger_mode": "manual",
+        "visibility": "public",
+        "created_by": current_user.id,
+    })
     return StandardResponse.success(
-        data=result.model_dump(),
-        message=f"已儲存為 Diagnostic Rule: {body.name}",
+        data={"id": obj.id, "name": obj.name},
+        message=f"已儲存為 Skill: {body.name}",
     )

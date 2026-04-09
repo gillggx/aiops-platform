@@ -412,11 +412,39 @@ export function AICopilot({
     }
   }, [loading, onContract, addLog]);
 
-  function handleSuggestedAction(action: SuggestedAction) {
+  async function handleSuggestedAction(action: SuggestedAction) {
     if (isAgentAction(action)) {
       sendMessage(action.message);
     } else if (isHandoffAction(action)) {
       onHandoff?.(action.mcp, action.params);
+    } else if ((action as Record<string, unknown>).trigger === "promote_analysis") {
+      const payload = (action as Record<string, unknown>).payload as Record<string, unknown> | undefined;
+      if (!payload) { alert("無法儲存：缺少分析步驟資料"); return; }
+      const title = (payload.title as string) || "Ad-hoc 分析";
+      const name = prompt("儲存為 My Skill\n\n名稱：", title);
+      if (!name) return;
+      try {
+        const res = await fetch("/api/admin/analysis/promote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            description: `從 Agent chat promote：${title}`,
+            auto_check_description: title,
+            steps_mapping: payload.steps_mapping,
+            input_schema: payload.input_schema,
+            output_schema: payload.output_schema || [],
+          }),
+        });
+        if (res.ok) {
+          alert(`已儲存為 Skill: ${name}\n\n前往 Knowledge Studio → My Skills 查看`);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(`儲存失敗: ${(err as Record<string, string>).message || res.statusText}`);
+        }
+      } catch (e) {
+        alert(`儲存失敗: ${e instanceof Error ? e.message : "未知錯誤"}`);
+      }
     }
   }
 

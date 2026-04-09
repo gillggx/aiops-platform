@@ -45,12 +45,21 @@ class SkillDefinitionModel(Base):
     # Declares what fields this Skill returns in _findings.outputs (render spec)
     output_schema: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="[]")
 
-    # "legacy" | "rule" | "auto_patrol"
-    # legacy   = old skill records (hidden from new UIs)
-    # rule     = Diagnostic Rule (visible in /admin/skills)
+    # "legacy" | "rule" | "auto_patrol" | "skill"
+    # legacy      = old skill records (hidden from new UIs)
+    # rule        = Diagnostic Rule (visible in /admin/skills)
     # auto_patrol = embedded skill owned by an Auto-Patrol (hidden)
+    # skill       = user-created Skill (My Skills page / chat promote)
     source: Mapped[str] = mapped_column(
         String(20), nullable=False, default="legacy", server_default="legacy"
+    )
+
+    # "none" | "event" | "alarm"
+    # none  = My Skill (Agent chat 手動呼叫)
+    # event = Auto-Patrol (接 Event Poller 自動觸發)
+    # alarm = Diagnostic Rule (接 Alarm 觸發深度診斷)
+    binding_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="none", server_default="none"
     )
 
     # For source="rule": what this rule automatically checks (used as LLM prompt)
