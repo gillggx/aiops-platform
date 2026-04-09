@@ -213,16 +213,17 @@ _ONTOLOGY_SYSTEM_MCPS = [
         "description": (
             "【製程事件查詢】輕量級查詢 — 回傳 process event 列表，每筆包含 SPC 判定結果。\n"
             "\n"
-            "⭐ 適合用來：判斷 OOC、統計 OOC 率、查看製程歷史。\n"
-            "   spc_status 欄位可直接判斷：spc_status == 'OOC' 表示超出管制。\n"
-            "   不需要呼叫 get_process_info 就能完成 OOC 檢查。\n"
+            "篩選方式（至少帶一個）：\n"
+            "  - toolID → 查該機台所有事件\n"
+            "  - lotID → 查該批次所有事件\n"
+            "  - step → 查全廠該站點的事件\n"
+            "  - 可組合：toolID + step → 該機台在該站的事件\n"
             "\n"
-            "回傳：LIST（不是 dict），每筆欄位（camelCase）：\n"
+            "回傳：LIST，每筆欄位（camelCase）：\n"
             "  eventTime, lotID, toolID, step, recipeID, apcID, spc_status('PASS'|'OOC')\n"
             "\n"
-            "⚠️ 此 MCP 不含 DC/SPC/APC/RECIPE 的詳細物件資料。\n"
-            "   如果只需要判斷 OOC → 用這個就夠。\n"
-            "   如果需要量測值、管制圖數據 → 改用 get_process_info。"
+            "⭐ spc_status 可直接判斷 OOC，不需要 get_process_info。\n"
+            "⚠️ 不含 DC/SPC/APC/RECIPE 詳細資料。需要量測值 → 用 get_process_info。"
         ),
         "api_config": {
             "endpoint_url": f"{_SIM}/api/v1/process/events",
@@ -231,9 +232,9 @@ _ONTOLOGY_SYSTEM_MCPS = [
         },
         "input_schema": {
             "fields": [
-                {"name": "toolID",    "type": "string", "description": "機台 ID，e.g. EQP-01。toolID 或 lotID 至少帶一個", "required": False},
-                {"name": "lotID",     "type": "string", "description": "批次 ID，e.g. LOT-0001。toolID 或 lotID 至少帶一個", "required": False},
-                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_045。帶了限定單站，不帶跨站", "required": False},
+                {"name": "toolID",    "type": "string", "description": "機台 ID，e.g. EQP-01", "required": False},
+                {"name": "lotID",     "type": "string", "description": "批次 ID，e.g. LOT-0001", "required": False},
+                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_020。可單獨用（查全廠該 step 的事件）", "required": False},
                 {"name": "eventTime", "type": "string", "description": "ISO8601 精確定位某次 process（可選）", "required": False},
                 {"name": "since",     "type": "string", "description": "時間窗 '24h'/'7d'/'30d'，預設 '7d'", "required": False},
             ]
@@ -272,7 +273,7 @@ _ONTOLOGY_SYSTEM_MCPS = [
             "fields": [
                 {"name": "toolID",    "type": "string", "description": "機台 ID，e.g. EQP-01。toolID 或 lotID 至少帶一個", "required": False},
                 {"name": "lotID",     "type": "string", "description": "批次 ID，e.g. LOT-0001。toolID 或 lotID 至少帶一個", "required": False},
-                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_045（可選）", "required": False},
+                {"name": "step",      "type": "string", "description": "站點代碼，e.g. STEP_020。可單獨用（查全廠該 step）", "required": False},
                 {"name": "eventTime", "type": "string", "description": "ISO8601 精確定位（可選）", "required": False},
                 {"name": "since",     "type": "string", "description": "時間窗 '24h'/'7d'/'30d'，預設 '7d'", "required": False},
             ]
