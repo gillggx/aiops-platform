@@ -1381,6 +1381,7 @@ class AgentOrchestrator:
         _tools_used: list = []   # Phase B: track successful tool calls for success pattern memory
         _last_spc_result: Optional[tuple] = None  # (mcp_name, result) — auto-contract fallback
         _chart_already_rendered: bool = False  # True once any tool result injected chart_intents via _notify_chart_rendered
+        _analysis_contract: Optional[Dict[str, Any]] = None  # contract from execute_analysis render card (has visualization)
 
         # ══════════════════════════════════════════════════════════════
         # v16: Layered Token Compaction
@@ -1499,6 +1500,9 @@ class AgentOrchestrator:
 
                 yield _stage_event(4, "running")
                 _synth_contract = _resolve_contract(final_text, _last_spc_result, _chart_already_rendered)
+                # execute_analysis contract has visualization — use it when _resolve_contract doesn't
+                if _analysis_contract and (not _synth_contract or not _synth_contract.get("visualization")):
+                    _synth_contract = _analysis_contract
                 # Strip raw <contract> block from user-visible text when chart already rendered
                 _synth_text = final_text
                 if _chart_already_rendered:
@@ -1687,6 +1691,9 @@ class AgentOrchestrator:
                     # the flag is visible when synthesis runs later.
                     if isinstance(result, dict) and result.get("_chart_rendered"):
                         _chart_already_rendered = True
+                    # Capture analysis contract for synthesis event
+                    if render_card and render_card.get("type") == "analysis" and render_card.get("contract"):
+                        _analysis_contract = render_card["contract"]
                     done_event: Dict[str, Any] = {
                         "type": "tool_done",
                         "tool": tool_name,
@@ -1778,8 +1785,10 @@ class AgentOrchestrator:
                             messages=_synthesis_messages,
                         )
                         final_text = _extract_text(synth_resp.content)
-                        yield {"type": "synthesis", "text": final_text,
-                               "contract": _resolve_contract(final_text, _last_spc_result, _chart_already_rendered)}
+                        _fc = _resolve_contract(final_text, _last_spc_result, _chart_already_rendered)
+                        if _analysis_contract and (not _fc or not _fc.get("visualization")):
+                            _fc = _analysis_contract
+                        yield {"type": "synthesis", "text": final_text, "contract": _fc}
                         # Also strip LLM-generated visualization from final_text when chart_already_rendered
                         messages.append({"role": "assistant", "content": synth_resp.content})
                     except Exception as exc:
@@ -1796,8 +1805,10 @@ class AgentOrchestrator:
             if not _plan_extracted:
                 yield _stage_event(2, "complete")
             yield _stage_event(4, "running")
-            yield {"type": "synthesis", "text": final_text,
-                   "contract": _resolve_contract(final_text, _last_spc_result, _chart_already_rendered)}
+            _fb_contract = _resolve_contract(final_text, _last_spc_result, _chart_already_rendered)
+            if _analysis_contract and (not _fb_contract or not _fb_contract.get("visualization")):
+                _fb_contract = _analysis_contract
+            yield {"type": "synthesis", "text": final_text, "contract": _fb_contract}
             yield _stage_event(4, "complete")
             messages.append({"role": "assistant", "content": response.content})
             break
