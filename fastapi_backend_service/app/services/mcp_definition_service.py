@@ -53,7 +53,7 @@ def _normalize_params(params: Dict[str, Any], mcp_name: str = "") -> Dict[str, A
     # ── snake_case → camelCase normalization ──────────────────────────────
     # Agent LLM sometimes uses snake_case (tool_id, lot_id) instead of camelCase
     _SNAKE_TO_CAMEL = {"tool_id": "toolID", "lot_id": "lotID", "event_time": "eventTime",
-                       "recipe_id": "recipeID", "apc_id": "apcID", "object_name": "objectName"}
+                       "recipe_id": "recipeID", "apc_id": "apcID"}
     for snake, camel in _SNAKE_TO_CAMEL.items():
         if snake in params and camel not in params:
             params[camel] = params.pop(snake)
