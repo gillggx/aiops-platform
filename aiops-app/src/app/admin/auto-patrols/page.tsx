@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RenderMiddleware, type OutputSchemaField } from "@/components/operations/SkillOutputRenderer";
-import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
+import { ClarifyDialog, type ClarifyQuestion, type ClarifyAnswer } from "@/components/skill-builder/ClarifyDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -239,8 +239,9 @@ export default function AutoPatrolsPage() {
   const [showModal, setShowModal]     = useState(false);
   const [form, setForm]               = useState(emptyForm());
 
-  // Interactive Skill Authoring
-  const [authoringOpen, setAuthoringOpen] = useState(false);
+  // Clarify dialog state
+  const [clarifyOpen, setClarifyOpen] = useState(false);
+  const [clarifyQuestions, setClarifyQuestions] = useState<ClarifyQuestion[]>([]);
 
   // Diagnostic plan state
   const [generating, setGenerating]   = useState(false);
@@ -384,7 +385,10 @@ export default function AutoPatrolsPage() {
     setProposalSteps([]);
     setTryRunResult(null);
     setConsoleLogs([]);
+    await runGenerateStream(form.auto_check_description.trim(), false);
+  }
 
+  async function runGenerateStream(description: string, skipClarify: boolean) {
     const addLog = (icon: string, text: string) =>
       setConsoleLogs(prev => [...prev, { icon, text }]);
 
@@ -393,7 +397,8 @@ export default function AutoPatrolsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          auto_check_description: form.auto_check_description.trim(),
+          auto_check_description: description,
+          skip_clarify: skipClarify,
           patrol_context: {
             trigger_mode: form.trigger_mode,
             data_context: form.data_context,
@@ -423,7 +428,13 @@ export default function AutoPatrolsPage() {
             const event = JSON.parse(line.slice(6)) as Record<string, unknown>;
             const type = event.type as string;
 
-            if (type === "phase") {
+            if (type === "clarify_needed") {
+              const qs = (event.questions as ClarifyQuestion[]) ?? [];
+              addLog("🤔", `需要確認 ${qs.length} 件事`);
+              setClarifyQuestions(qs);
+              setClarifyOpen(true);
+              return; // Stop streaming, wait for user
+            } else if (type === "phase") {
               addLog("📦", `Phase ${event.phase}: ${event.message}`);
             } else if (type === "fetch") {
               const status = event.status as string;
@@ -607,10 +618,7 @@ export default function AutoPatrolsPage() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: "#1a202c" }}>Auto-Patrols</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button style={S.btn("#6366f1")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立</button>
-          <button style={S.btn("#a0aec0")} onClick={openCreate}>+ 表單建立</button>
-        </div>
+        <button style={S.btn("#6366f1")} onClick={openCreate}>+ 新增 Auto-Patrol</button>
       </div>
 
       {/* List */}
@@ -1292,17 +1300,24 @@ export default function AutoPatrolsPage() {
         </div>
       )}
 
-      {/* Interactive Skill Authoring */}
-      <SkillAuthoringChat
-        open={authoringOpen}
-        targetType="auto_patrol"
-        targetContext={{
-          trigger_mode: "event",
-          data_context: "recent_ooc",
-          target_scope_type: "event_driven",
+      {/* Inline clarification dialog */}
+      <ClarifyDialog
+        open={clarifyOpen}
+        questions={clarifyQuestions}
+        onCancel={() => {
+          setClarifyOpen(false);
+          setGenerating(false);
+          setConsoleLogs(prev => [...prev, { icon: "❌", text: "已取消生成" }]);
         }}
-        onClose={() => setAuthoringOpen(false)}
-        onSaved={() => reloadList()}
+        onConfirm={async (answers: ClarifyAnswer[]) => {
+          setClarifyOpen(false);
+          const enriched =
+            form.auto_check_description.trim() +
+            "\n\n[使用者澄清]\n" +
+            answers.map(a => `- ${a.label}：${a.value}`).join("\n");
+          setConsoleLogs(prev => [...prev, { icon: "✓", text: "已收到澄清，繼續生成..." }]);
+          await runGenerateStream(enriched, true);
+        }}
       />
     </div>
   );

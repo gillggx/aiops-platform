@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
+import { ClarifyDialog, type ClarifyQuestion, type ClarifyAnswer } from "@/components/skill-builder/ClarifyDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -73,8 +73,9 @@ export default function MySkillsPage() {
   // Try-run
   const [tryRunResult, setTryRunResult] = useState<Record<string, unknown> | null>(null);
 
-  // Interactive authoring
-  const [authoringOpen, setAuthoringOpen] = useState(false);
+  // Clarify dialog
+  const [clarifyOpen, setClarifyOpen] = useState(false);
+  const [clarifyQuestions, setClarifyQuestions] = useState<ClarifyQuestion[]>([]);
 
   // ── Fetch ──
 
@@ -130,12 +131,15 @@ export default function MySkillsPage() {
     setSteps([]);
     setInputSchema([]);
     setOutputSchema([]);
+    await runGenerateStream(meta.auto_check_description, false);
+  }
 
+  async function runGenerateStream(description: string, skipClarify: boolean) {
     try {
       const res = await fetch("/api/admin/my-skills/generate-steps", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: meta.auto_check_description }),
+        body: JSON.stringify({ description, skip_clarify: skipClarify }),
       });
       if (!res.ok || !res.body) {
         setBuildPhase("idle");
@@ -157,7 +161,13 @@ export default function MySkillsPage() {
           if (!line.startsWith("data: ")) continue;
           try {
             const ev = JSON.parse(line.slice(6));
-            if (ev.type === "log" || ev.type === "phase") {
+            if (ev.type === "clarify_needed") {
+              const qs = (ev.questions ?? []) as ClarifyQuestion[];
+              setConsoleLogs(prev => [...prev, `🤔 需要確認 ${qs.length} 件事`]);
+              setClarifyQuestions(qs);
+              setClarifyOpen(true);
+              return;
+            } else if (ev.type === "log" || ev.type === "phase") {
               setConsoleLogs(prev => [...prev, ev.message || ev.text || JSON.stringify(ev)]);
             } else if (ev.type === "done" || ev.type === "result") {
               const d = ev.data || ev;
@@ -265,7 +275,7 @@ export default function MySkillsPage() {
             Agent chat 常用分析工具 — 從對話 promote 或手動建立
           </div>
         </div>
-        <button style={S.btn("#2b6cb0")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立 Skill</button>
+        <button style={S.btn("#2b6cb0")} onClick={openCreate}>+ 建立 Skill</button>
       </div>
 
       {/* ── Skill List ── */}
@@ -418,12 +428,24 @@ export default function MySkillsPage() {
         </div>
       )}
 
-      {/* Interactive Skill Authoring */}
-      <SkillAuthoringChat
-        open={authoringOpen}
-        targetType="my_skill"
-        onClose={() => setAuthoringOpen(false)}
-        onSaved={() => fetchSkills()}
+      {/* Inline clarification dialog */}
+      <ClarifyDialog
+        open={clarifyOpen}
+        questions={clarifyQuestions}
+        onCancel={() => {
+          setClarifyOpen(false);
+          setBuildPhase("idle");
+          setConsoleLogs(prev => [...prev, "❌ 已取消生成"]);
+        }}
+        onConfirm={async (answers: ClarifyAnswer[]) => {
+          setClarifyOpen(false);
+          const enriched =
+            meta.auto_check_description.trim() +
+            "\n\n[使用者澄清]\n" +
+            answers.map(a => `- ${a.label}：${a.value}`).join("\n");
+          setConsoleLogs(prev => [...prev, "✓ 已收到澄清，繼續生成..."]);
+          await runGenerateStream(enriched, true);
+        }}
       />
     </div>
   );

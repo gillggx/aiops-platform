@@ -178,6 +178,7 @@ async def generate_steps_stream(
     req = GenerateRuleStepsRequest(
         auto_check_description=body.get("description", ""),
         patrol_context=None,  # My Skill — no patrol context
+        skip_clarify=body.get("skip_clarify", False),
     )
     return StreamingResponse(
         svc.generate_steps_stream(req),

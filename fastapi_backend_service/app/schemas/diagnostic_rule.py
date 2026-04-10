@@ -70,6 +70,7 @@ class GenerateRuleStepsRequest(BaseModel):
     """Ask LLM to generate steps_mapping + output_schema from auto_check_description."""
     auto_check_description: str = Field(..., min_length=5)
     patrol_context: Optional[PatrolContext] = None
+    skip_clarify: bool = Field(default=False, description="True = skip Phase 0 ambiguity check (used on resume after user answered clarifications)")
 
 
 class GenerateRuleStepsResponse(BaseModel):

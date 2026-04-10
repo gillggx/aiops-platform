@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RenderMiddleware, RenderOutputValue, type OutputSchemaField } from "@/components/operations/SkillOutputRenderer";
-import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
+import { ClarifyDialog, type ClarifyQuestion, type ClarifyAnswer } from "@/components/skill-builder/ClarifyDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -250,7 +250,9 @@ export default function DiagnosticRulesPage() {
     setShowModal(true);
   }
 
-  const [authoringOpen, setAuthoringOpen] = useState(false);
+  // Clarify dialog state — for inline interruption when LLM detects ambiguity
+  const [clarifyOpen, setClarifyOpen] = useState(false);
+  const [clarifyQuestions, setClarifyQuestions] = useState<ClarifyQuestion[]>([]);
 
   function openEdit(rule: DiagnosticRule) {
     resetModal();
@@ -339,7 +341,10 @@ export default function DiagnosticRulesPage() {
     setOutputSchema([]);
     setTryRunResult(null);
     setCodeEdited(false);
+    await runGenerateStream(meta.auto_check_description.trim(), false);
+  }
 
+  async function runGenerateStream(description: string, skipClarify: boolean) {
     const addLog = (text: string, ok?: boolean) =>
       setConsoleLogs(prev => [...prev, { text, ok }]);
 
@@ -347,7 +352,10 @@ export default function DiagnosticRulesPage() {
       const res = await fetch("/api/admin/rules/generate-steps/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auto_check_description: meta.auto_check_description.trim() }),
+        body: JSON.stringify({
+          auto_check_description: description,
+          skip_clarify: skipClarify,
+        }),
       });
 
       if (!res.body) throw new Error("No response body");
@@ -371,6 +379,13 @@ export default function DiagnosticRulesPage() {
           try { event = JSON.parse(line); } catch { continue; }
 
           switch (event.type) {
+            case "clarify_needed": {
+              const qs = (event.questions as ClarifyQuestion[]) ?? [];
+              addLog(`🤔 需要確認 ${qs.length} 件事`);
+              setClarifyQuestions(qs);
+              setClarifyOpen(true);
+              return; // Stop streaming, wait for user to answer
+            }
             case "phase":
               addLog(`[Phase ${event.phase}] ${event.message}`);
               break;
@@ -515,10 +530,7 @@ export default function DiagnosticRulesPage() {
       {/* Header */}
       <div style={S.header}>
         <div style={S.title}>Diagnostic Rules</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button style={S.btn("#3182ce")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立</button>
-          <button style={S.btn("#a0aec0")} onClick={openCreate}>+ 表單建立</button>
-        </div>
+        <button style={S.btn("#3182ce")} onClick={openCreate}>+ 新增 Rule</button>
       </div>
 
       {/* Table */}
@@ -874,12 +886,25 @@ export default function DiagnosticRulesPage() {
         </div>
       )}
 
-      {/* Interactive Skill Authoring */}
-      <SkillAuthoringChat
-        open={authoringOpen}
-        targetType="diagnostic_rule"
-        onClose={() => setAuthoringOpen(false)}
-        onSaved={() => reloadList()}
+      {/* Inline clarification dialog */}
+      <ClarifyDialog
+        open={clarifyOpen}
+        questions={clarifyQuestions}
+        onCancel={() => {
+          setClarifyOpen(false);
+          setPhase("idle");
+          setConsoleLogs(prev => [...prev, { text: "❌ 已取消生成", ok: false }]);
+        }}
+        onConfirm={async (answers: ClarifyAnswer[]) => {
+          setClarifyOpen(false);
+          // Append answers to description and re-run with skip_clarify=true
+          const enriched =
+            meta.auto_check_description.trim() +
+            "\n\n[使用者澄清]\n" +
+            answers.map(a => `- ${a.label}：${a.value}`).join("\n");
+          setConsoleLogs(prev => [...prev, { text: "✓ 已收到澄清，繼續生成..." }]);
+          await runGenerateStream(enriched, true);
+        }}
       />
     </div>
   );

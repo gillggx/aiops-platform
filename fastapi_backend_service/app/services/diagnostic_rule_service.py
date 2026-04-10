@@ -489,11 +489,84 @@ Step {len(steps)} is the LAST step and MUST end with _findings = {{"condition_me
             logger.exception("fix_skill failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
+    async def quick_clarify_check(
+        self, description: str, target_type: str = "skill"
+    ) -> Optional[Dict[str, Any]]:
+        """Phase 0: Check if user description has critical ambiguities.
+
+        Returns None if description is clear (proceed to generation).
+        Returns {"questions": [...]} if user needs to answer 1-2 questions first.
+        """
+        if not self._llm:
+            return None
+
+        target_label = {
+            "auto_patrol": "Auto-Patrol（Event Poller 自動觸發）",
+            "diagnostic_rule": "Diagnostic Rule（Alarm 觸發後深度診斷）",
+            "my_skill": "My Skill（Agent chat 呼叫的工具）",
+        }.get(target_type, "Skill")
+
+        system = f"""\
+你是 Skill 設計助手。下面是使用者要建立 {target_label} 的需求描述。
+你的唯一任務：判斷描述是否清楚到可以直接生成 code，**絕對不要寫 code 或規劃 MCP**。
+
+⛔ 嚴格禁止問的問題：
+1. 不要問「input 從哪來」 — input 由系統自動帶入（Auto-Patrol/DR 從 trigger event；My Skill 從呼叫者）
+2. 不要問「output 要顯示什麼」 — 你應該自己決定合理的 output_schema
+3. 不要問「要用哪個 MCP」 — 你應該自己決定
+4. 不要問「要不要顯示圖表」 — 預設要
+
+✅ 只在這些情況才問（最多 2 題）：
+- 模糊的時間範圍：「最近的資料」→ 7d / 14d / 30d
+- 模糊的閾值：「異常」「OOC」「太多」→ 具體 N 次或閾值
+- 語意歧義：「相同 X」可能指 ID 相同或數值相同
+- 邏輯選項：「滿足條件後」可能告警或忽略
+
+回傳規則：
+- 如果描述清楚或可以用合理預設值 → 回傳 {{"needs_clarification": false}}
+- 如果有 1-2 個關鍵歧義 → 回傳：
+
+{{
+  "needs_clarification": true,
+  "questions": [
+    {{
+      "id": "time_window",
+      "label": "時間範圍",
+      "question": "「最近的資料」是指多久內？",
+      "options": ["7 天", "14 天", "30 天"],
+      "default": "7 天",
+      "allow_freetext": true
+    }}
+  ]
+}}
+
+⚠️ 強制規則：
+- 最多 2 題（一題以內最好）
+- 每題必須有 default 值
+- 描述：「{description}」
+- 大部分情況應該回 needs_clarification: false（只在真的模糊到無法下手時才問）
+"""
+        try:
+            resp = await self._llm.create(
+                system=system,
+                messages=[{"role": "user", "content": description}],
+                max_tokens=800,
+            )
+            text = resp.text or ""
+            parsed = _extract_json(text)
+            if parsed.get("needs_clarification") and parsed.get("questions"):
+                return parsed
+            return None
+        except Exception as exc:
+            logger.warning("quick_clarify_check failed: %s", exc)
+            return None  # Fail-open: proceed to generation
+
     async def generate_steps_stream(
         self, body: GenerateRuleStepsRequest
     ) -> AsyncGenerator[str, None]:
         """Streams SSE events for two-phase DR generation.
 
+        Phase 0  — Quick ambiguity check (skipped if body.skip_clarify=True)
         Phase 1  — LLM decides which MCPs are needed
         Phase 1.5 — Backend samples each MCP with mock params
         Phase 2  — LLM writes analysis code given confirmed MCPs + real response shapes
@@ -501,6 +574,21 @@ Step {len(steps)} is the LAST step and MUST end with _findings = {{"condition_me
         if not self._llm:
             yield _sse({"type": "error", "error": "LLM service not configured"})
             return
+
+        # ── Phase 0: Quick ambiguity check ──────────────────────────────────────
+        if not body.skip_clarify:
+            yield _sse({"type": "phase", "phase": 0, "message": "檢查需求是否清楚..."})
+            target_type = "auto_patrol" if body.patrol_context else "skill"
+            clarify_result = await self.quick_clarify_check(
+                body.auto_check_description, target_type=target_type
+            )
+            if clarify_result and clarify_result.get("questions"):
+                # User needs to answer first — yield clarify_needed and stop
+                yield _sse({
+                    "type": "clarify_needed",
+                    "questions": clarify_result["questions"],
+                })
+                return
 
         # ── Build patrol context for LLM ─────────────────────────────────────
         patrol_ctx = body.patrol_context

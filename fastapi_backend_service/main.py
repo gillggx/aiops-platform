@@ -70,8 +70,6 @@ from app.routers.monitor_router import router as monitor_router
 from app.routers.analysis import router as analysis_router
 # My Skills (user-created skills for Agent chat)
 from app.routers.my_skills import router as my_skills_router
-# Skill Authoring (interactive multi-turn skill creation)
-from app.routers.skill_authoring import router as skill_authoring_router
 
 settings = get_settings()
 _SIM = settings.ONTOLOGY_SIM_URL  # e.g. "http://localhost:8001"
@@ -1240,7 +1238,6 @@ app.include_router(experience_memory_router, prefix=_PREFIX)  # /api/v1/experien
 app.include_router(monitor_router, prefix=_PREFIX)            # /api/v1/system/monitor
 app.include_router(analysis_router, prefix=_PREFIX)            # /api/v1/analysis/run + /promote
 app.include_router(my_skills_router, prefix=_PREFIX)           # /api/v1/my-skills/...
-app.include_router(skill_authoring_router, prefix=_PREFIX)     # /api/v1/skill-authoring/...
 
 # ---------------------------------------------------------------------------
 # Global Exception Handlers
