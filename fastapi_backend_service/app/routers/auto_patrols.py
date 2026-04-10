@@ -40,10 +40,25 @@ def _get_svc(db: AsyncSession = Depends(get_db)) -> AutoPatrolService:
 @router.get("", response_model=StandardResponse)
 async def list_patrols(
     active_only: bool = False,
+    with_stats: bool = True,
+    stats_hours: int = 24,
+    db: AsyncSession = Depends(get_db),
     svc: AutoPatrolService = Depends(_get_svc),
     _: UserModel = Depends(get_current_user),
 ):
     items = await svc.list_all(active_only=active_only)
+
+    # Enrich with execution stats per patrol
+    if with_stats and items:
+        log_repo = ExecutionLogRepository(db)
+        for it in items:
+            try:
+                pid = it.get("id") if isinstance(it, dict) else getattr(it, "id", None)
+                if pid:
+                    it["stats"] = await log_repo.get_patrol_stats(pid, hours=stats_hours)
+            except Exception:
+                pass
+
     return StandardResponse.success(data=items)
 
 
@@ -152,6 +167,19 @@ async def list_executions(
         for r in rows
     ]
     return StandardResponse.success(data=data)
+
+
+@router.get("/{patrol_id}/stats", response_model=StandardResponse)
+async def patrol_stats(
+    patrol_id: int,
+    hours: int = 24,
+    db: AsyncSession = Depends(get_db),
+    _: UserModel = Depends(get_current_user),
+):
+    """Aggregated execution stats for a patrol over the last N hours."""
+    log_repo = ExecutionLogRepository(db)
+    stats = await log_repo.get_patrol_stats(patrol_id, hours=hours)
+    return StandardResponse.success(data=stats)
 
 
 # ── Manual Trigger ─────────────────────────────────────────────────────────────

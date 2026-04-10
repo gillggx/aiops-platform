@@ -12,9 +12,10 @@ function authHeaders() {
 
 export async function GET(req: NextRequest) {
   const activeOnly = req.nextUrl.searchParams.get("active_only") ?? "false";
+  const withStats = req.nextUrl.searchParams.get("with_stats") ?? "true";
   try {
     const res = await fetch(
-      `${FASTAPI_BASE}/api/v1/auto-patrols?active_only=${activeOnly}`,
+      `${FASTAPI_BASE}/api/v1/auto-patrols?active_only=${activeOnly}&with_stats=${withStats}`,
       { headers: authHeaders(), cache: "no-store" }
     );
     const data = await res.json();

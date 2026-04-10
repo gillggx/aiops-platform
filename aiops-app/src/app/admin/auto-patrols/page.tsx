@@ -612,6 +612,7 @@ export default function AutoPatrolsPage() {
           <tr>
             <th style={S.th}>名稱</th>
             <th style={S.th}>觸發方式</th>
+            <th style={S.th}>近 24h 執行</th>
             <th style={S.th}>警報</th>
             <th style={S.th}>狀態</th>
             <th style={S.th}>操作</th>
@@ -619,7 +620,7 @@ export default function AutoPatrolsPage() {
         </thead>
         <tbody>
           {patrols.length === 0 && (
-            <tr><td colSpan={5} style={{ ...S.td, color: "#a0aec0", textAlign: "center" }}>尚無 Auto-Patrol</td></tr>
+            <tr><td colSpan={6} style={{ ...S.td, color: "#a0aec0", textAlign: "center" }}>尚無 Auto-Patrol</td></tr>
           )}
           {patrols.map(p => (
             <tr key={p.id}>
@@ -639,6 +640,56 @@ export default function AutoPatrolsPage() {
                       p.data_context === "active_lots" ? "進行中 Lot" :
                       p.data_context === "tool_status" ? "Tool 狀態" : ""
                     }`}
+              </td>
+              <td style={{ ...S.td, fontSize: 11, minWidth: 200 }}>
+                {(() => {
+                  const stats = (p as any).stats;
+                  if (!stats || stats.total === 0) {
+                    return <span style={{ color: "#a0aec0" }}>近 24h 無執行</span>;
+                  }
+                  const byTrigger: Record<string, number> = stats.by_trigger || {};
+                  const byEq: Record<string, number> = stats.by_equipment || {};
+                  const lastAt = stats.last_at ? new Date(stats.last_at) : null;
+                  const minsAgo = lastAt ? Math.floor((Date.now() - lastAt.getTime()) / 60000) : null;
+                  const lastAgo = minsAgo === null ? "—"
+                    : minsAgo < 60 ? `${minsAgo} 分前`
+                    : minsAgo < 1440 ? `${Math.floor(minsAgo/60)} 時前`
+                    : `${Math.floor(minsAgo/1440)} 天前`;
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{ fontWeight: 700, color: "#2d3748" }}>{stats.total} 次</span>
+                        {stats.error > 0 && (
+                          <span style={{ color: "#e53e3e", fontSize: 10 }}>({stats.error} err)</span>
+                        )}
+                        {stats.condition_met_count > 0 && (
+                          <span style={{ color: "#dd6b20", fontSize: 10 }}>⚠ {stats.condition_met_count} 觸發</span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {Object.entries(byTrigger).map(([k, v]) => {
+                          const label = k === "event_poller" ? "⚡event" :
+                                        k === "schedule" ? "🕐schedule" :
+                                        k === "manual" ? "👆manual" :
+                                        k.startsWith("alarm:") ? "🚨alarm" : k;
+                          return (
+                            <span key={k} style={{ padding: "1px 6px", borderRadius: 8, background: "#edf2f7", color: "#4a5568", fontSize: 10 }}>
+                              {label} {v}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      {Object.keys(byEq).length > 0 && (
+                        <div style={{ fontSize: 10, color: "#718096" }}>
+                          機台: {Object.keys(byEq).length} 台 ({Object.entries(byEq).slice(0,3).map(([k,v]) => `${k}×${v}`).join(", ")}{Object.keys(byEq).length > 3 ? "…" : ""})
+                        </div>
+                      )}
+                      <div style={{ fontSize: 10, color: "#a0aec0" }}>
+                        最後: {lastAgo}
+                      </div>
+                    </div>
+                  );
+                })()}
               </td>
               <td style={S.td}>
                 {p.alarm_severity ? (

@@ -39,6 +39,107 @@ class ExecutionLogRepository:
         result = await self._db.execute(q)
         return list(result.scalars().all())
 
+    async def get_patrol_stats(
+        self,
+        auto_patrol_id: int,
+        hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Aggregated stats for a single patrol over the last N hours.
+
+        Returns:
+          {
+            total: int,
+            success: int,
+            error: int,
+            condition_met_count: int,
+            by_trigger: {event_poller: int, schedule: int, manual: int, ...},
+            by_equipment: {EQP-01: int, ...},  # parsed from event_context
+            last_at: ISO datetime str | None,
+            last_status: str | None,
+            avg_duration_ms: int,
+          }
+        """
+        from sqlalchemy import func, and_, case, Integer
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+
+        # Aggregate counts using CASE WHEN
+        success_case = case((ExecutionLogModel.status == "success", 1), else_=0)
+        error_case = case((ExecutionLogModel.status == "error", 1), else_=0)
+
+        agg_q = select(
+            func.count().label("total"),
+            func.sum(success_case).label("success"),
+            func.sum(error_case).label("error"),
+            func.avg(ExecutionLogModel.duration_ms).label("avg_dur"),
+            func.max(ExecutionLogModel.started_at).label("last_at"),
+        ).where(
+            and_(
+                ExecutionLogModel.auto_patrol_id == auto_patrol_id,
+                ExecutionLogModel.started_at >= cutoff,
+            )
+        )
+        agg_row = (await self._db.execute(agg_q)).one()
+
+        # Breakdown by triggered_by
+        trig_q = select(
+            ExecutionLogModel.triggered_by,
+            func.count().label("c"),
+        ).where(
+            and_(
+                ExecutionLogModel.auto_patrol_id == auto_patrol_id,
+                ExecutionLogModel.started_at >= cutoff,
+            )
+        ).group_by(ExecutionLogModel.triggered_by)
+        trig_rows = (await self._db.execute(trig_q)).all()
+        by_trigger: Dict[str, int] = {}
+        for row in trig_rows:
+            key = row[0] or "unknown"
+            # Normalize: triggered_by like "event_poller" or "manual" or "schedule"
+            by_trigger[key] = (by_trigger.get(key) or 0) + int(row[1])
+
+        # Last execution status + condition_met count
+        last_q = select(ExecutionLogModel).where(
+            and_(
+                ExecutionLogModel.auto_patrol_id == auto_patrol_id,
+                ExecutionLogModel.started_at >= cutoff,
+            )
+        ).order_by(ExecutionLogModel.started_at.desc()).limit(50)
+        recent = list((await self._db.execute(last_q)).scalars().all())
+
+        condition_met_count = 0
+        by_equipment: Dict[str, int] = {}
+        for r in recent:
+            try:
+                lrd = json.loads(r.llm_readable_data) if r.llm_readable_data else {}
+                if lrd.get("condition_met"):
+                    condition_met_count += 1
+            except Exception:
+                pass
+            try:
+                ctx = json.loads(r.event_context) if r.event_context else {}
+                eq = ctx.get("equipment_id") or ""
+                if eq:
+                    by_equipment[eq] = by_equipment.get(eq, 0) + 1
+            except Exception:
+                pass
+
+        last_status = recent[0].status if recent else None
+
+        return {
+            "total": int(agg_row[0] or 0),
+            "success": int(agg_row[1] or 0),
+            "error": int(agg_row[2] or 0),
+            "condition_met_count": condition_met_count,
+            "by_trigger": by_trigger,
+            "by_equipment": by_equipment,
+            "last_at": agg_row[4].isoformat() if agg_row[4] else None,
+            "last_status": last_status,
+            "avg_duration_ms": int(agg_row[3] or 0),
+            "window_hours": hours,
+        }
+
     async def get_by_cron_job(self, cron_job_id: int, limit: int = 50) -> List[ExecutionLogModel]:
         result = await self._db.execute(
             select(ExecutionLogModel)
