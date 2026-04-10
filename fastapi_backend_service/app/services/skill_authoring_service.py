@@ -290,16 +290,17 @@ class SkillAuthoringService:
                     json_str = sse_line[6:].rstrip("\n")
                     payload = json.loads(json_str)
                     t = payload.get("type", "")
+                    logger.info("[AUTHORING] gen event: type=%s", t)
                     if t == "step_plan":
-                        # Phase 2a output
                         if payload.get("steps"):
                             steps_mapping = payload["steps"]
                         if payload.get("input_schema"):
                             input_schema = payload["input_schema"]
                         if payload.get("output_schema"):
                             output_schema = payload["output_schema"]
+                        logger.info("[AUTHORING] step_plan captured: steps=%d input=%d output=%d",
+                                    len(steps_mapping), len(input_schema), len(output_schema))
                     elif t == "done":
-                        # Final result includes assembled steps with python_code
                         result = payload.get("result", {})
                         if result.get("steps_mapping"):
                             steps_mapping = result["steps_mapping"]
@@ -307,10 +308,15 @@ class SkillAuthoringService:
                             input_schema = result["input_schema"]
                         if result.get("output_schema"):
                             output_schema = result["output_schema"]
+                        logger.info("[AUTHORING] done captured: steps=%d input=%d output=%d",
+                                    len(steps_mapping), len(input_schema), len(output_schema))
                     elif t == "error":
                         gen_failed = True
+                        logger.warning("[AUTHORING] gen error: %s", payload.get("error"))
                 except Exception as parse_exc:
-                    logger.debug("generate parse failed: %s, line=%s", parse_exc, sse_line[:200])
+                    logger.warning("[AUTHORING] generate parse failed: %s, line=%s", parse_exc, sse_line[:300])
+
+        logger.info("[AUTHORING] generate loop done: gen_failed=%s, steps=%d", gen_failed, len(steps_mapping))
 
         if gen_failed or not steps_mapping:
             session.state = "drafting"
