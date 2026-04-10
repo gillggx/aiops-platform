@@ -113,11 +113,6 @@ class Config(BaseSettings):
         default="bge-m3",
         description="Embedding model name (bge-m3 → 1024-dim vectors)",
     )
-    # ── Agent Orchestrator version (Phase 2-B) ────────────────────────
-    AGENT_ORCHESTRATOR_VERSION: str = Field(
-        default="v2",
-        description="v1 = legacy while-loop, v2 = LangGraph StateGraph (default since Phase 2-C)",
-    )
     LLM_MAX_TOKENS_DIAGNOSTIC: int = Field(
         default=4096,
         description="Max output tokens for the diagnostic agent loop",

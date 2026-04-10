@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 from langchain_core.runnables import RunnableConfig
 
-from app.services.agent_orchestrator import _extract_memory_citations
+from app.services.agent_orchestrator_v2.helpers import _extract_memory_citations
 
 logger = logging.getLogger(__name__)
 

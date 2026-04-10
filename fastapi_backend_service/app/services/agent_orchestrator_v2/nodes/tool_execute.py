@@ -32,12 +32,12 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
     user_id = config["configurable"]["user_id"]
 
     # Import here to avoid circular imports at module level
-    from app.services.agent_orchestrator import (
+    from app.services.agent_orchestrator_v2.helpers import (
         _preflight_validate,
-        _build_render_card,
         _is_spc_result,
         _result_summary,
     )
+    from app.services.agent_orchestrator_v2.render_card import _build_render_card
     from app.services.data_distillation_service import DataDistillationService
     from app.services.tool_dispatcher import ToolDispatcher
 

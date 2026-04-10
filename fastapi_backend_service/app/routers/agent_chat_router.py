@@ -23,8 +23,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.agent_session import AgentSessionModel
 from app.models.user import UserModel
-from app.config import get_settings
-from app.services.agent_orchestrator import AgentOrchestrator
+from app.services.agent_orchestrator_v2 import AgentOrchestratorV2
 
 router = APIRouter(prefix="/agent", tags=["agent-v13"])
 
@@ -72,41 +71,20 @@ async def agent_chat_stream(
     auth_header = request.headers.get("Authorization", "")
     auth_token = auth_header.removeprefix("Bearer ").strip()
 
-    # Feature flag: v1 (legacy while-loop) or v2 (LangGraph StateGraph)
-    settings = get_settings()
-    version = request.headers.get("X-Agent-Version") or settings.AGENT_ORCHESTRATOR_VERSION
-    if version == "v2":
-        from app.services.agent_orchestrator_v2 import AgentOrchestratorV2
-        orchestrator = AgentOrchestratorV2(
-            db=db,
-            base_url=base_url,
-            auth_token=auth_token,
-            user_id=current_user.id,
-            canvas_overrides=body.context_overrides or None,
-        )
-    else:
-        orchestrator = AgentOrchestrator(
-            db=db,
-            base_url=base_url,
-            auth_token=auth_token,
-            user_id=current_user.id,
-        )
+    orchestrator = AgentOrchestratorV2(
+        db=db,
+        base_url=base_url,
+        auth_token=auth_token,
+        user_id=current_user.id,
+        canvas_overrides=body.context_overrides or None,
+    )
 
     async def event_stream():
         try:
-            # v1's run() is `async def run() -> AsyncIterator` (returns the generator)
-            # v2's run() is `async def run() -> AsyncIterator` (is the generator)
-            # Both produce an async iterable we can `async for` over.
-            if version == "v2":
-                gen = orchestrator.run(
-                    message=body.message,
-                    session_id=body.session_id,
-                )
-            else:
-                gen = await orchestrator.run(
-                    message=body.message,
-                    session_id=body.session_id,
-                )
+            gen = orchestrator.run(
+                message=body.message,
+                session_id=body.session_id,
+            )
             async for event in gen:
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:

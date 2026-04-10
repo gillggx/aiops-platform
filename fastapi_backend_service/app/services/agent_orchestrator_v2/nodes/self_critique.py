@@ -18,8 +18,7 @@ from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
-# Reuse the existing helpers from v1 (they're standalone functions)
-from app.services.agent_orchestrator import (
+from app.services.agent_orchestrator_v2.helpers import (
     _detect_id_hallucinations,
     _extract_memory_citations,
 )

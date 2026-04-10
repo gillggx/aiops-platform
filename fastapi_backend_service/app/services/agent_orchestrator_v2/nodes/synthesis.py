@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 async def synthesis_node(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     """Extract final answer + contract from the conversation state."""
-    from app.services.agent_orchestrator import _resolve_contract
+    from app.services.agent_orchestrator_v2.helpers import _resolve_contract
 
     messages = state["messages"]
     last_msg = messages[-1] if messages else None

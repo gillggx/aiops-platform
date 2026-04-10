@@ -29,7 +29,7 @@ from app.repositories.data_subject_repository import DataSubjectRepository
 from app.repositories.mcp_definition_repository import MCPDefinitionRepository
 from app.repositories.skill_definition_repository import SkillDefinitionRepository
 from app.repositories.system_parameter_repository import SystemParameterRepository
-from app.services.agent_orchestrator import set_approval
+from app.services.agent_orchestrator_v2.helpers import set_approval
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
