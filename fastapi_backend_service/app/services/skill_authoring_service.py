@@ -111,7 +111,24 @@ class SkillAuthoringService:
     # ── Phase 0: Clarify ──────────────────────────────────────────────────────
 
     async def clarify(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
-        """LLM produces an understanding + clarification questions."""
+        """LLM produces an understanding + clarification questions.
+
+        Uses a fresh DB session for the streaming lifetime.
+        """
+        from app.database import AsyncSessionLocal
+        from sqlalchemy import select as _select
+
+        session_id = session.id
+        async with AsyncSessionLocal() as fresh_db:
+            r = await fresh_db.execute(
+                _select(SkillAuthoringSessionModel).where(SkillAuthoringSessionModel.id == session_id)
+            )
+            session = r.scalar_one()
+            self._db = fresh_db
+            async for chunk in self._clarify_inner(session):
+                yield chunk
+
+    async def _clarify_inner(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
         if not self._llm:
             yield _sse({"type": "error", "message": "LLM not configured"})
             return
@@ -233,7 +250,30 @@ class SkillAuthoringService:
     # ── Phase 1-3: Generate steps ─────────────────────────────────────────────
 
     async def generate(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
-        """Run Phase 1/1.5/2/3 generation, taking into account the clarified intent."""
+        """Run Phase 1/1.5/2/3 generation, taking into account the clarified intent.
+
+        ⚠️ Uses a fresh DB session because the request-scoped one closes when
+        the route handler returns (before the streaming generator finishes).
+        """
+        from app.database import AsyncSessionLocal
+        from sqlalchemy import select as _select
+
+        # Re-load session from a NEW DB session that lives for the full stream
+        session_id = session.id
+        async with AsyncSessionLocal() as fresh_db:
+            r = await fresh_db.execute(
+                _select(SkillAuthoringSessionModel).where(SkillAuthoringSessionModel.id == session_id)
+            )
+            session = r.scalar_one()
+
+            # Swap the service's _db so _save_session/_append_turn use fresh_db
+            self._db = fresh_db
+
+            async for chunk in self._generate_inner(session):
+                yield chunk
+
+    async def _generate_inner(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
+        """Inner generator — uses self._db (which has been swapped to fresh_db)."""
         import sys
         print(f"[AUTHORING] generate START session={session.id}", file=sys.stderr, flush=True)
         # Build enriched description from initial prompt + understanding + user responses
@@ -437,7 +477,24 @@ class SkillAuthoringService:
         await self._save_session(session)
 
     async def revise(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
-        """Ask LLM to fix the code based on the latest user feedback."""
+        """Ask LLM to fix the code based on the latest user feedback.
+
+        Uses a fresh DB session for the streaming lifetime.
+        """
+        from app.database import AsyncSessionLocal
+        from sqlalchemy import select as _select
+
+        session_id = session.id
+        async with AsyncSessionLocal() as fresh_db:
+            r = await fresh_db.execute(
+                _select(SkillAuthoringSessionModel).where(SkillAuthoringSessionModel.id == session_id)
+            )
+            session = r.scalar_one()
+            self._db = fresh_db
+            async for chunk in self._revise_inner(session):
+                yield chunk
+
+    async def _revise_inner(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
         if not self._llm:
             yield _sse({"type": "error", "message": "LLM not configured"})
             return
