@@ -234,6 +234,8 @@ class SkillAuthoringService:
 
     async def generate(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
         """Run Phase 1/1.5/2/3 generation, taking into account the clarified intent."""
+        import sys
+        print(f"[AUTHORING] generate START session={session.id}", file=sys.stderr, flush=True)
         # Build enriched description from initial prompt + understanding + user responses
         turns = _j(session.turns, [])
         responses = [t["content"] for t in turns if t.get("role") == "user" and t.get("type") == "clarification_response"]
@@ -290,7 +292,8 @@ class SkillAuthoringService:
                     json_str = sse_line[6:].rstrip("\n")
                     payload = json.loads(json_str)
                     t = payload.get("type", "")
-                    logger.info("[AUTHORING] gen event: type=%s", t)
+                    import sys
+                    print(f"[AUTHORING] gen event: type={t}", file=sys.stderr, flush=True)
                     if t == "step_plan":
                         if payload.get("steps"):
                             steps_mapping = payload["steps"]
@@ -316,7 +319,8 @@ class SkillAuthoringService:
                 except Exception as parse_exc:
                     logger.warning("[AUTHORING] generate parse failed: %s, line=%s", parse_exc, sse_line[:300])
 
-        logger.info("[AUTHORING] generate loop done: gen_failed=%s, steps=%d", gen_failed, len(steps_mapping))
+        import sys
+        print(f"[AUTHORING] generate loop done: gen_failed={gen_failed}, steps={len(steps_mapping)}", file=sys.stderr, flush=True)
 
         if gen_failed or not steps_mapping:
             session.state = "drafting"
