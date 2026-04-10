@@ -274,8 +274,6 @@ class SkillAuthoringService:
 
     async def _generate_inner(self, session: SkillAuthoringSessionModel) -> AsyncGenerator[str, None]:
         """Inner generator — uses self._db (which has been swapped to fresh_db)."""
-        import sys
-        print(f"[AUTHORING] generate START session={session.id}", file=sys.stderr, flush=True)
         # Build enriched description from initial prompt + understanding + user responses
         turns = _j(session.turns, [])
         responses = [t["content"] for t in turns if t.get("role") == "user" and t.get("type") == "clarification_response"]
@@ -332,8 +330,6 @@ class SkillAuthoringService:
                     json_str = sse_line[6:].rstrip("\n")
                     payload = json.loads(json_str)
                     t = payload.get("type", "")
-                    import sys
-                    print(f"[AUTHORING] gen event: type={t}", file=sys.stderr, flush=True)
                     if t == "step_plan":
                         if payload.get("steps"):
                             steps_mapping = payload["steps"]
@@ -341,8 +337,6 @@ class SkillAuthoringService:
                             input_schema = payload["input_schema"]
                         if payload.get("output_schema"):
                             output_schema = payload["output_schema"]
-                        logger.info("[AUTHORING] step_plan captured: steps=%d input=%d output=%d",
-                                    len(steps_mapping), len(input_schema), len(output_schema))
                     elif t == "done":
                         result = payload.get("result", {})
                         if result.get("steps_mapping"):
@@ -351,16 +345,10 @@ class SkillAuthoringService:
                             input_schema = result["input_schema"]
                         if result.get("output_schema"):
                             output_schema = result["output_schema"]
-                        logger.info("[AUTHORING] done captured: steps=%d input=%d output=%d",
-                                    len(steps_mapping), len(input_schema), len(output_schema))
                     elif t == "error":
                         gen_failed = True
-                        logger.warning("[AUTHORING] gen error: %s", payload.get("error"))
-                except Exception as parse_exc:
-                    logger.warning("[AUTHORING] generate parse failed: %s, line=%s", parse_exc, sse_line[:300])
-
-        import sys
-        print(f"[AUTHORING] generate loop done: gen_failed={gen_failed}, steps={len(steps_mapping)}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
 
         if gen_failed or not steps_mapping:
             session.state = "drafting"
@@ -374,8 +362,6 @@ class SkillAuthoringService:
             return
 
         # Save generated artifacts
-        import sys
-        print(f"[AUTHORING] saving session={session.id} state→planned steps={len(steps_mapping)}", file=sys.stderr, flush=True)
         session.current_steps_mapping = json.dumps(steps_mapping, ensure_ascii=False)
         session.current_input_schema = json.dumps(input_schema, ensure_ascii=False)
         session.current_output_schema = json.dumps(output_schema, ensure_ascii=False)
@@ -390,12 +376,7 @@ class SkillAuthoringService:
             "output_schema_count": len(output_schema),
             "timestamp": _now_iso(),
         })
-        try:
-            await self._save_session(session)
-            print(f"[AUTHORING] save committed for session={session.id}", file=sys.stderr, flush=True)
-        except Exception as save_exc:
-            print(f"[AUTHORING] save FAILED: {save_exc}", file=sys.stderr, flush=True)
-
+        await self._save_session(session)
         yield _sse({"type": "state", "state": session.state})
 
     # ── Try-Run ───────────────────────────────────────────────────────────────
