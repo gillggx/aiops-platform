@@ -69,9 +69,9 @@ Dashboard layout：
 
 | Route | Page | 說明 |
 |-------|------|------|
-| `/admin/my-skills` | **My Skills** | 使用者個人 Skill 管理 — 列表、LLM 生成、編輯、Try-Run、刪除、升級（→ Auto-Patrol 或 Diagnostic Rule）。頂部入口：「🤖 對話建立 Skill」（Interactive Authoring）+ 「+ 表單建立」（fallback） |
-| `/admin/auto-patrols` | Auto-Patrols | 自動巡檢排程管理。頂部入口：「🤖 對話建立」（帶入 patrol_context）+ 「+ 表單建立」 |
-| `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成）。頂部入口：「🤖 對話建立」（帶入 alarm context）+ 「+ 表單建立」 |
+| `/admin/my-skills` | **My Skills** | 使用者個人 Skill 管理 — 列表、LLM 生成、編輯、Try-Run、刪除、升級（→ Auto-Patrol 或 Diagnostic Rule）。表單建立流程，生成時若 Phase 0 回 `clarify_needed` 則彈出 `ClarifyDialog` 補問 1~2 個商業邏輯問題 |
+| `/admin/auto-patrols` | Auto-Patrols | 自動巡檢排程管理。同樣走表單建立 + 內嵌 clarification 中斷 |
+| `/admin/skills` | Diagnostic Rules | 診斷規則管理（建立 / 編輯 / Try-Run / SSE 生成）。同樣走表單建立 + 內嵌 clarification 中斷 |
 
 ### 3.3 Admin
 
@@ -111,14 +111,28 @@ Dashboard layout：
 | `PlotlyVisualization.tsx` | Plotly 互動圖表 |
 | `KpiCard.tsx` | KPI 指標卡片 |
 
-### 4.4 Skill Authoring（對話式 Skill 建立）
+### 4.4 Inline Clarification（表單建立中斷式補問）
+
+2026-04-09：原本的 `SkillAuthoringChat`（多輪對話式 Skill 建立）已移除。改為在 3 個 admin 頁面既有的表單建立流程中，內嵌一次輕量的 clarification 中斷。
 
 | Component | 說明 |
 |-----------|------|
-| `SkillAuthoringChat.tsx` | `src/components/skill-authoring/SkillAuthoringChat.tsx` — Interactive Skill Authoring 主體。**被 3 個 admin 頁面（My Skills / Auto-Patrols / Diagnostic Rules）共用**，差異只在初始化時傳入的 `target_type` 與 `target_context`。兩欄 layout：**左 60% chat** + **右 40% 即時 PreviewPanel** |
-| `TurnBubble`（內嵌） | 依 turn type 渲染不同樣式卡片：`clarification`（黃，含 checklist / ambiguities / questions）、`code_generated`（藍）、`test_result`（紫）、`code_revised`（綠，含 diagnosis / fix_summary）、`generation_failed`（紅） |
-| `PreviewPanel`（內嵌） | 即時顯示當前 `input_schema` / `output_schema` / `steps_mapping` / 最近一次 try-run 結果 |
-| Feedback Box（內嵌） | ✅ correct / 🤔 partial / ❌ wrong 三顆按鈕 + comment textarea，送出後呼叫 `/feedback` 並可自動觸發 `/revise` |
+| `ClarifyDialog.tsx` | 520px 傳統 form modal（非 chat UI）— 顯示 1~2 個問題，每題 button options + optional freetext + 預設值。被 My Skills / Auto-Patrols / Diagnostic Rules 3 個頁面共用 |
+
+**3 個 admin 頁面的 `handleGenerate` 拆分模式：**
+
+```
+handleGenerate(desc)              # 外層，使用者按「生成」按鈕
+  → runGenerateStream(desc, skipClarify=false)
+       ├─ SSE event "clarify_needed" → 停止 streaming → 開啟 ClarifyDialog
+       └─ 正常 stream → 正常顯示
+
+ClarifyDialog onConfirm(answers)
+  → newDesc = desc + "\n\n" + answers 附加
+  → runGenerateStream(newDesc, skipClarify=true)   # 第二次呼叫跳過 Phase 0
+```
+
+這個拆分讓生成流程可以在中途「暫停 / 補問 / 續跑」，不需要獨立的 authoring session。
 
 ### 4.5 Ontology 視覺化
 
@@ -146,7 +160,6 @@ aiops-app 的 API routes 全部是 **proxy** — 轉發到 `fastapi_backend_serv
 | `POST /api/admin/my-skills/generate-steps/stream` | `POST /api/v1/my-skills/generate-steps/stream` | SSE My Skill 生成 |
 | `POST /api/admin/my-skills/{id}/try-run` | `POST /api/v1/my-skills/{id}/try-run` | My Skill 試跑 |
 | `POST /api/admin/my-skills/{id}/bind` | `POST /api/v1/my-skills/{id}/bind` | 升級 Skill binding_type |
-| `GET/POST/DELETE /api/admin/skill-authoring/[...path]` | `/api/v1/skill-authoring/*` | Skill Authoring catch-all proxy（SSE streams 直接透傳 `Content-Type: text/event-stream`） |
 | `GET /api/admin/automation/*` | `/api/v1/*` | Automation catch-all |
 | `GET /api/ontology/*` | `/api/v1/ontology/*` | Ontology catch-all |
 | `GET /api/mcp-catalog` | — | 回傳 MCP catalog（from store or catalog.ts） |

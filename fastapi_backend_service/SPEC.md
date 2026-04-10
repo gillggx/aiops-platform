@@ -78,27 +78,8 @@ fastapi_backend_service/
 | `ScriptVersionModel` | `script_versions` | Skill 腳本版本管理（draft → active → archived） |
 | `ExecutionLogModel` | `execution_logs` | Skill 執行歷史（duration, status, output） |
 | `NatsEventLogModel` | `nats_event_log` | NATS 事件接收紀錄 |
-| `SkillAuthoringSessionModel` | `skill_authoring_sessions` | Interactive Skill Authoring 對話 session（state machine + turn history） |
 
-### 4.4 Skill Authoring Session Schema
-
-`skill_authoring_sessions` 儲存多輪對話式 Skill 建立流程的完整狀態：
-
-| Column | Type | 說明 |
-|--------|------|------|
-| `id` | UUID | Session primary key |
-| `user_id` | FK | 建立者 |
-| `target_type` | enum | `my_skill` / `auto_patrol` / `diagnostic_rule` |
-| `state` | enum | `drafting` / `clarifying` / `planned` / `tested` / `reviewed` / `saved` / `revising` |
-| `initial_prompt` | text | 使用者原始需求描述 |
-| `target_context` | JSON | 視 target_type 帶入的上下文（e.g. patrol_context / alarm_context） |
-| `turns` | JSON[] | 所有對話回合歷史（user / clarification / code_generated / test_result / feedback / code_revised / generation_failed） |
-| `current_understanding` | JSON | Agent 當前對需求的理解 |
-| `current_steps_mapping` | JSON | 最新一版 steps_mapping |
-| `current_input_schema` | JSON | 最新一版 input_schema |
-| `current_output_schema` | JSON | 最新一版 output_schema |
-| `last_test_result` | JSON | 最近一次 try-run 結果 |
-| `promoted_skill_id` | FK | save 後 promote 出的 skill_definitions.id |
+> **Note (2026-04-09)：** `SkillAuthoringSessionModel` / `skill_authoring_sessions` table 已移除。原本的「多輪對話式 Skill 建立」流程改為 **inline clarification**（見 §6.6 Phase 0 + §5.2 skip_clarify），由既有的 generate-steps SSE endpoint 內嵌一次輕量 clarify 檢查，不再維護獨立 session。
 
 ### 4.3 Skill 資料結構（Unified Skill Architecture）
 
@@ -152,16 +133,8 @@ output_schema:  [{key, type, label, unit?, columns?, x_key?, y_keys?, group_key?
 | `GET/POST/PATCH` | `/mcp-definitions` | MCP 定義 CRUD |
 | `POST` | `/mcp-definitions/{id}/sample-fetch` | 測試 MCP 端點 |
 | `GET/POST/PATCH` | `/skill-definitions` | Skill 定義 CRUD |
-| `POST` | `/skill-authoring/sessions` | 建立 Interactive Skill Authoring session |
-| `GET` | `/skill-authoring/sessions` | 列出使用者的 authoring sessions |
-| `GET` | `/skill-authoring/sessions/{id}` | 讀取 session 完整 detail（含 turns） |
-| `POST` | `/skill-authoring/sessions/{id}/clarify` | SSE — Agent 產出 understanding / checklist / ambiguities / questions |
-| `POST` | `/skill-authoring/sessions/{id}/respond` | 使用者回覆 clarification 問題 |
-| `POST` | `/skill-authoring/sessions/{id}/generate` | SSE — Phase 1~3 LLM 生成 steps + schema |
-| `POST` | `/skill-authoring/sessions/{id}/try-run` | 以 mock payload 試跑當前 steps |
-| `POST` | `/skill-authoring/sessions/{id}/feedback` | 記錄使用者 rating（correct / wrong / partial）+ comment |
-| `POST` | `/skill-authoring/sessions/{id}/revise` | SSE — LLM 依 feedback 重新生成 code |
-| `POST` | `/skill-authoring/sessions/{id}/save` | Promote session 為 `skill_definitions` 記錄 |
+
+> **Note (2026-04-09)：** `/api/v1/skill-authoring/*` router（8 endpoints）已移除。改為 `generate-steps/stream` 內嵌 Phase 0 clarify 檢查 — request 支援 `skip_clarify: bool` 欄位，SSE 可 yield `clarify_needed` event（帶 1~2 questions）讓前端中斷、收集答案後帶 `skip_clarify=true` 重新呼叫。
 
 ### 5.3 Analysis（Ad-hoc）
 
@@ -247,42 +220,34 @@ Feature flag `?engine=v2` 切換。
 
 ### 6.6 Diagnostic Rule Service
 
-`diagnostic_rule_service.py` (~29KB) — AI 診斷規則生成：
+`diagnostic_rule_service.py` — AI 診斷規則生成（同一個 service 也負責 My Skill / Auto-Patrol 的 steps 生成）：
 
+- **Phase 0 — `quick_clarify_check()`（2026-04-09 新增）：** 在正式生成前跑一次輕量 LLM 呼叫，判斷使用者的 NL description 是否真的缺少關鍵商業邏輯資訊。
+  - 回傳 `None` → 資訊足夠，直接進入 Phase 1
+  - 回傳 `{"questions": [...]}` → 1~2 個問題，每題含 `default` + `options`（button choices）+ 可選 freetext
+  - **嚴格禁止詢問**：input 欄位來源、output 格式、要用哪支 MCP、使用者已明示的參數值。只針對真正模糊的商業邏輯（e.g. 時間窗口 N days、threshold、ID 比對 vs 值比對）
 - Phase 1: MCP planner — 從 NL 描述規劃需要哪些 MCP 呼叫
 - Phase 2a: Step planner — 拆解為多個 step（nl_segment）
 - Phase 2b: Per-step code — 逐 step 生成 python_code
 - SSE streaming 支援
 
-### 6.7 Skill Authoring Service
-
-`skill_authoring_service.py` — Interactive（多輪對話式）Skill 建立的 orchestrator，取代過去「單次 one-shot 生成」的流程。
-
-**State Machine：**
+**`generate_steps_stream()` 新流程：**
 
 ```
-drafting → clarifying → planned → tested → reviewed → saved
-                                     ↓ (feedback = wrong / partial)
-                                revising → planned (loop)
+request (skip_clarify=false 預設)
+  ↓
+Phase 0 quick_clarify_check
+  ├─ 需要澄清 → yield SSE event "clarify_needed" {questions: [...]} → 結束
+  └─ 不需要 → 繼續
+  ↓
+Phase 1 → 2a → 2b（原流程）
 ```
 
-| State | 觸發 | 說明 |
-|-------|------|------|
-| `drafting` | `POST /sessions` | Session 建立，尚未開始分析 |
-| `clarifying` | `POST /sessions/{id}/clarify` (SSE) | Agent 產出 understanding + checklist + ambiguities + questions；使用者透過 `/respond` 逐輪回覆補資訊 |
-| `planned` | `POST /sessions/{id}/generate` (SSE) | Phase 1~3 LLM 生成 steps_mapping + input_schema + output_schema |
-| `tested` | `POST /sessions/{id}/try-run` | 以 mock payload 執行 sandbox，寫回 `last_test_result` |
-| `reviewed` | `POST /sessions/{id}/feedback` | 使用者 rating（correct / wrong / partial）+ comment |
-| `revising` | `POST /sessions/{id}/revise` (SSE) | Feedback = wrong/partial 時 LLM 依據 diagnosis + fix_summary 重新生成，回到 `planned` |
-| `saved` | `POST /sessions/{id}/save` | Promote 為 `skill_definitions` 記錄，寫入 `promoted_skill_id` |
+Frontend 接到 `clarify_needed` 後彈出 `ClarifyDialog`，使用者回答後把答案 append 到 description 並以 `skip_clarify=true` 重新呼叫同一個 endpoint，跳過 Phase 0。
 
-**共用 target_type：** `my_skill` / `auto_patrol` / `diagnostic_rule` 三種入口共用同一個 service，差異僅在 `target_context`（patrol context / alarm context）與 save 時的 `binding_type`。
+**Request schema：** `GenerateRuleStepsRequest` 新增 `skip_clarify: bool = False` 欄位，同時套用在 `/diagnostic-rules/generate-steps/stream`、`/my-skills/generate-steps/stream`、Auto-Patrol 建立流程。
 
-**SSE + Fresh DB Session（重要實作細節）：**
-
-`clarify` / `generate` / `revise` 三個 streaming endpoints **不使用** `Depends(get_db)`，而是在 generator 內部透過 `AsyncSessionLocal()` 自行開一個 fresh session。原因：FastAPI 的 request-scoped session 會在 `StreamingResponse` generator 還在 yield 時就被關閉，導致 save 的 commit 靜默失敗（不會 raise exception，但 DB 完全沒有寫入）。此規則適用於所有需要在 streaming generator 內寫入 DB 的 endpoint。
-
-### 6.8 其他 Services
+### 6.7 其他 Services
 
 | Service | 說明 |
 |---------|------|
@@ -295,7 +260,7 @@ drafting → clarifying → planned → tested → reviewed → saved
 | `auth_service.py` | JWT token 生成 + 驗證 |
 | `sandbox_service.py` | 安全沙盒執行環境（exec + 受限 globals） |
 
-### 6.9 ChartMiddleware
+### 6.8 ChartMiddleware
 
 `chart_middleware.py` — Registry-based 圖表自動生成中間層：
 
