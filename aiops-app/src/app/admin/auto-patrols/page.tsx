@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RenderMiddleware, type OutputSchemaField } from "@/components/operations/SkillOutputRenderer";
+import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -237,6 +238,9 @@ export default function AutoPatrolsPage() {
   const [eventTypes, setEventTypes]   = useState<EventType[]>([]);
   const [showModal, setShowModal]     = useState(false);
   const [form, setForm]               = useState(emptyForm());
+
+  // Interactive Skill Authoring
+  const [authoringOpen, setAuthoringOpen] = useState(false);
 
   // Diagnostic plan state
   const [generating, setGenerating]   = useState(false);
@@ -603,7 +607,10 @@ export default function AutoPatrolsPage() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: "#1a202c" }}>Auto-Patrols</div>
-        <button style={S.btn("#6366f1")} onClick={openCreate}>+ 新增 Auto-Patrol</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.btn("#6366f1")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立</button>
+          <button style={S.btn("#a0aec0")} onClick={openCreate}>+ 表單建立</button>
+        </div>
       </div>
 
       {/* List */}
@@ -1284,6 +1291,19 @@ export default function AutoPatrolsPage() {
           </div>
         </div>
       )}
+
+      {/* Interactive Skill Authoring */}
+      <SkillAuthoringChat
+        open={authoringOpen}
+        targetType="auto_patrol"
+        targetContext={{
+          trigger_mode: "event",
+          data_context: "recent_ooc",
+          target_scope_type: "event_driven",
+        }}
+        onClose={() => setAuthoringOpen(false)}
+        onSaved={() => reloadList()}
+      />
     </div>
   );
 }

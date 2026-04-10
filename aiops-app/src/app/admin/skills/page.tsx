@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RenderMiddleware, RenderOutputValue, type OutputSchemaField } from "@/components/operations/SkillOutputRenderer";
+import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -248,6 +249,8 @@ export default function DiagnosticRulesPage() {
     resetModal();
     setShowModal(true);
   }
+
+  const [authoringOpen, setAuthoringOpen] = useState(false);
 
   function openEdit(rule: DiagnosticRule) {
     resetModal();
@@ -512,7 +515,10 @@ export default function DiagnosticRulesPage() {
       {/* Header */}
       <div style={S.header}>
         <div style={S.title}>Diagnostic Rules</div>
-        <button style={S.btn("#3182ce")} onClick={openCreate}>+ 新增 Rule</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.btn("#3182ce")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立</button>
+          <button style={S.btn("#a0aec0")} onClick={openCreate}>+ 表單建立</button>
+        </div>
       </div>
 
       {/* Table */}
@@ -867,6 +873,14 @@ export default function DiagnosticRulesPage() {
           </div>
         </div>
       )}
+
+      {/* Interactive Skill Authoring */}
+      <SkillAuthoringChat
+        open={authoringOpen}
+        targetType="diagnostic_rule"
+        onClose={() => setAuthoringOpen(false)}
+        onSaved={() => reloadList()}
+      />
     </div>
   );
 }

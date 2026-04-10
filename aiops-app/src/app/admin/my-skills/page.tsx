@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { SkillAuthoringChat } from "@/components/skill-authoring/SkillAuthoringChat";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,9 @@ export default function MySkillsPage() {
 
   // Try-run
   const [tryRunResult, setTryRunResult] = useState<Record<string, unknown> | null>(null);
+
+  // Interactive authoring
+  const [authoringOpen, setAuthoringOpen] = useState(false);
 
   // ── Fetch ──
 
@@ -261,7 +265,7 @@ export default function MySkillsPage() {
             Agent chat 常用分析工具 — 從對話 promote 或手動建立
           </div>
         </div>
-        <button style={S.btn("#2b6cb0")} onClick={openCreate}>+ 建立 Skill</button>
+        <button style={S.btn("#2b6cb0")} onClick={() => setAuthoringOpen(true)}>🤖 對話建立 Skill</button>
       </div>
 
       {/* ── Skill List ── */}
@@ -413,6 +417,14 @@ export default function MySkillsPage() {
           </div>
         </div>
       )}
+
+      {/* Interactive Skill Authoring */}
+      <SkillAuthoringChat
+        open={authoringOpen}
+        targetType="my_skill"
+        onClose={() => setAuthoringOpen(false)}
+        onSaved={() => fetchSkills()}
+      />
     </div>
   );
 }

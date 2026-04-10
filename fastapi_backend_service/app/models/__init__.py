@@ -22,6 +22,7 @@ from app.models.cron_job import CronJobModel
 from app.models.execution_log import ExecutionLogModel
 from app.models.auto_patrol import AutoPatrolModel
 from app.models.nats_event_log import NatsEventLogModel
+from app.models.skill_authoring_session import SkillAuthoringSessionModel
 
 __all__ = [
     "UserModel",
@@ -46,4 +47,5 @@ __all__ = [
     "ExecutionLogModel",
     "AutoPatrolModel",
     "NatsEventLogModel",
+    "SkillAuthoringSessionModel",
 ]
