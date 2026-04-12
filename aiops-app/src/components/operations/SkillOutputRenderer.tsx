@@ -328,7 +328,7 @@ export function RenderOutputValue({
   }
 
   if (type === "badge") {
-    const label = String(val);
+    const label = Array.isArray(val) ? val.join(", ") : String(val);
     const isOk = /正常|pass|ok|false/i.test(label);
     return (
       <span style={{ padding: "2px 10px", borderRadius: 10, fontSize: 12, fontWeight: 600,
@@ -339,9 +339,17 @@ export function RenderOutputValue({
   }
 
   if (type === "scalar") {
+    // Tolerate object values: extract .value or first numeric field
+    let display: string;
+    if (val != null && typeof val === "object" && !Array.isArray(val)) {
+      const obj = val as Record<string, unknown>;
+      display = String(obj.value ?? obj.total ?? obj.count ?? Object.values(obj).find(v => typeof v === "number") ?? JSON.stringify(obj));
+    } else {
+      display = String(val);
+    }
     return (
       <span>
-        <strong style={{ color: "#2d3748", fontSize: 15 }}>{String(val)}</strong>
+        <strong style={{ color: "#2d3748", fontSize: 15 }}>{display}</strong>
         {field?.unit && <span style={{ fontSize: 12, color: "#718096", marginLeft: 4 }}>{field.unit}</span>}
       </span>
     );
