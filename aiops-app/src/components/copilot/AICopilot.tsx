@@ -6,7 +6,6 @@ import { isValidContract, isAgentAction, isHandoffAction } from "aiops-contract"
 import { consumeSSE } from "@/lib/sse";
 import { ContractCard } from "./ContractCard";
 import { ChartIntentRenderer, type ChartIntent } from "./ChartIntentRenderer";
-import { ChartDSLRenderer } from "@/components/operations/SkillOutputRenderer";
 import type { UiRender } from "@/components/McpChartRenderer";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -174,46 +173,55 @@ const MD_CSS = `
 // RenderDecisionChips — inline expandable chart switcher for MCP results
 // ---------------------------------------------------------------------------
 
-function RenderDecisionChips({ decision }: { decision: RenderDecisionMeta }) {
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-
+function RenderDecisionChips({ decision, onContract }: {
+  decision: RenderDecisionMeta;
+  onContract?: (contract: AIOpsReportContract) => void;
+}) {
   // Collect all options (primary first, then alternatives)
   const allOptions: RenderOptionBlock[] = [];
   if (decision.primary) allOptions.push(decision.primary);
   if (decision.alternatives) allOptions.push(...decision.alternatives);
-  if (decision.options) allOptions.push(...decision.options);  // ask_user mode
+  if (decision.options) allOptions.push(...decision.options);
 
   if (allOptions.length === 0) return null;
 
-  const expanded = expandedIdx !== null ? allOptions[expandedIdx] : null;
+  function handleClick(opt: RenderOptionBlock) {
+    if (!onContract) return;
+    // Build a contract from the render option → opens in center AnalysisPanel
+    const charts = opt.charts ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const contract: any = {
+      $schema: "aiops-report/v1",
+      summary: opt.label,
+      evidence_chain: [],
+      visualization: [],
+      suggested_actions: [],
+      charts,
+      ...(opt.outputs ? {
+        findings: { condition_met: false, summary: "", outputs: opt.outputs },
+        output_schema: opt.output_schema ?? [],
+      } : {}),
+    };
+    onContract(contract);
+  }
 
   return (
     <div style={{ maxWidth: "90%", marginTop: 4 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: expanded ? 8 : 0 }}>
-        {allOptions.map((opt, i) => (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {allOptions.map((opt) => (
           <button
             key={opt.id}
-            onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
+            onClick={() => handleClick(opt)}
             style={{
               padding: "3px 10px", fontSize: 11, borderRadius: 12,
-              border: expandedIdx === i ? "1px solid #4299e1" : "1px solid #cbd5e0",
-              background: expandedIdx === i ? "#ebf4ff" : "#fff",
-              color: expandedIdx === i ? "#2b6cb0" : "#4a5568",
-              cursor: "pointer", fontWeight: expandedIdx === i ? 600 : 400,
+              border: "1px solid #cbd5e0", background: "#fff",
+              color: "#4a5568", cursor: "pointer", fontWeight: 400,
             }}
           >
             {opt.recommended ? "⭐ " : ""}{opt.label}
           </button>
         ))}
       </div>
-      {expanded && expanded.charts && expanded.charts.length > 0 && (
-        <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 8, maxHeight: 500, overflowY: "auto" }}>
-          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          {expanded.charts.map((chart: any, ci: number) => (
-            <ChartDSLRenderer key={ci} chart={chart} />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -684,7 +692,7 @@ export function AICopilot({
                     </div>
                   )}
                   {msg.role === "agent" && msg.renderDecision && (
-                    <RenderDecisionChips decision={msg.renderDecision} />
+                    <RenderDecisionChips decision={msg.renderDecision} onContract={onContract} />
                   )}
                 </>
               )}
