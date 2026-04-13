@@ -129,6 +129,7 @@ def _unwrap_chart_data(data: Any) -> Any:
         {"type": "line_chart", "x_key": "eventTime", "y_keys": [...], "data": [...]}
         {"data": [...], "metadata": {...}}
         {"records": [...]}
+        {"EQP-01": [...], "EQP-02": [...]}  ← dict-of-lists (grouped by key)
 
     This helper detects common wrapper shapes and returns the inner list.
     Falls back to the original value if no known wrapper is recognised.
@@ -140,6 +141,21 @@ def _unwrap_chart_data(data: Any) -> Any:
         v = data.get(k)
         if isinstance(v, list):
             return v
+    # Dict-of-lists: every value is a list of dicts → flatten into one list
+    # e.g. {"EQP-01": [{...}, ...], "EQP-02": [{...}, ...]}
+    values = list(data.values())
+    if values and all(isinstance(v, list) for v in values):
+        all_dicts = all(
+            isinstance(r, dict) for v in values for r in v if v
+        )
+        if all_dicts:
+            flat = []
+            for group_name, rows in data.items():
+                for r in rows:
+                    flat.append({**r, "_group": group_name})
+            if flat:
+                logger.info("[ChartMiddleware] unwrap dict-of-lists: %d groups → %d rows", len(data), len(flat))
+                return flat
     return data
 
 
