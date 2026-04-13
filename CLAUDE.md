@@ -42,10 +42,14 @@ catalog = format_for_llm(mcps)  # 從 name + description + input_schema 組裝
 
 ### 3. Skill Description 也是如此
 
-Skill 的 `auto_check_description` 欄位必須清楚說明：
-- 這個 Skill 檢查什麼
-- 預期的 input（event_payload 帶什麼欄位）
+Skill 的 `description` 欄位必須清楚說明：
+- 這個 Skill 做什麼（用途 + 使用場景）
+- 預期的 input（哪些參數、型別）
+- 輸出什麼（chart type / table / scalar）
 - 判斷邏輯（e.g. 「最近 5 次 process 中 >= 2 次 OOC 則觸發」）
+- ⚠️ 與相似 Skill 的區別（e.g. 「這是 APC 參數，不是 Recipe 參數」）
+
+**理由：** Agent 選 Skill 時只看 `name` + `description`。如果 description 模糊，Agent 會選錯 Skill。
 
 ---
 
