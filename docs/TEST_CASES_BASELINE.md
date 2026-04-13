@@ -1,6 +1,6 @@
 # Copilot Baseline Test Cases
 
-**Date:** 2026-04-13
+**Date:** 2026-04-14 (v6)
 **Purpose:** Validate LLM routing + chart rendering behavior after prompt changes.
 **How to run:** POST to `/api/v1/agent/chat/stream` with each prompt, check SSE events.
 
@@ -82,7 +82,39 @@ From SSE events, check:
 **Symptom:** 「Recipe 參數有沒有變動」→ LLM 只拿最新一筆 Recipe 列表，沒有做歷史比較。
 **Root cause:** LLM 選了 execute_mcp + execute_skill(#24 最新 Recipe 列表)，而不是用 execute_analysis 做多筆比對。
 **Impact:** 回答不完整 — 列了參數但沒回答「有沒有變動」。
-**Fix:** execute_analysis description 已改為 data pipeline 思維，但 LLM 仍偏好用現有 skill。可能需要在 skill#24 description 加註「此 skill 只看最新一筆，不做歷史比較」。
+**Fix:** skill#24 description 已加註「只看最新一筆，不做歷史比較」(2026-04-13 patched)。
+
+### Issue 6: LLM 拿到資料後仍反問（pe-09, pe-14）
+**Symptom:** get_process_summary 已回傳 24h by_tool breakdown，LLM 有資料但不分析，選擇反問時間範圍。
+**Root cause:** LLM 推理行為不穩定。同樣的 prompt 有時直接回答有時反問。已嘗試：
+  - context_loader: 預設 24h 規則 ✅
+  - MCP description: since 預設 24h ✅
+  - MCP backend: _DEFAULT_SINCE 補 get_process_summary=24h ✅
+  - Few-shot examples: 4 個正確 vs 錯誤範例 ✅
+**Impact:** 約 20% 的 case 仍會反問。
+**Status:** LLM 層面問題，非架構問題。待 model 升級或切換後重測。
+
+---
+
+## PE 產線情境 Test Cases (2026-04-14)
+
+| # | 產線情境 | 工具路徑 | 反問？ | 結果 |
+|---|---------|---------|-------|------|
+| pe-01 | 今天有什麼異常嗎 | summary → 文字 | ❌ | ✅ |
+| pe-02 | 接班有什麼要注意的 | status+summary+tools → 文字 | ❌ | ✅ |
+| pe-03 | EQP-03 剛 OOC 了 | skill#23+#22 → chart | ❌ | ✅ |
+| pe-04 | STEP_001 又 OOC 了 | mcp×2 + skill×3 → chart | ❌ | ✅ |
+| pe-05 | 為什麼這台一直 OOC | — | ✅ 問哪台 | ✅ 正確反問 |
+| pe-06 | LOT-0001 良率差 | mcp → 文字 | ❌ | ✅ |
+| pe-07 | EQP-05 不太穩定 | summary → 文字 | ❌ | ✅ |
+| pe-08 | chamber pressure 漂移 | mcp → analysis → chart | ❌ | ✅ |
+| pe-09 | EQP-01 vs EQP-02 OOC | summary → 反問 | ✅ | ⚠️ Issue 6 |
+| pe-10 | STEP_001 哪幾台有問題 | list+mcp → 文字 | ❌ | ✅ |
+| pe-11 | STEP_001 OOC 根因 | summary+mcp → 文字分析 | ❌ | ✅ |
+| pe-12 | APC 還是 Recipe 問題 | summary → 文字 | ❌ | ✅ |
+| pe-13 | 全廠狀況 | tools+status → 文字 | ❌ | ✅ |
+| pe-14 | 哪台最需關注 | summary → 反問 | ✅ | ⚠️ Issue 6 |
+| pe-15 | 需要停機檢查嗎 | summary → 文字 | ❌ | ✅ |
 
 ---
 
