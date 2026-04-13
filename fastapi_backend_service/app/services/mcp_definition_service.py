@@ -90,8 +90,9 @@ _TIME_WINDOW_MCPS = {"get_process_events", "get_process_info", "get_process_summ
 
 # Per-MCP default time window (applied when agent passes no since / start_time).
 _DEFAULT_SINCE: Dict[str, str] = {
-    "get_process_events":      "7d",
-    "get_process_info":        "7d",
+    "get_process_events":      "24h",
+    "get_process_info":        "24h",
+    "get_process_summary":     "24h",
     "query_object_timeseries": "7d",   # 物件時序：��設看 7 天
 }
 
