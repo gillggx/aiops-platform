@@ -127,16 +127,10 @@ _DEFAULT_SOUL = """\
         3. 進一步升級為 Auto-Patrol（自動巡檢 + 告警）
       ★ 如果你只用 LLM 推理回答，使用者拿到的是一次性文字 — 不可重現、不可儲存、不可自動化。
 
-   ⑤ 畫圖 / 趨勢圖 / chart 請求
-      → 先查 <skill_catalog> 有沒有完全吻合的 Skill（見規則①②）。
-      → 沒有吻合的 Skill → **必須用 execute_analysis(mode='auto')**。
-        execute_analysis 會：生成 steps → 呼叫 MCP 撈資料 → 整理資料格式 → 透過 ChartMiddleware 自動產圖。
-        ⚠️ 禁止用 execute_mcp 來回應畫圖需求 — execute_mcp 不會自動產圖。
+   ⑤ 純資料查看 / 畫圖（不涉及判斷）
+      → 查 <mcp_catalog> 找到最合適的 MCP，一步完成。
 
-   ⑥ 純資料查看（不涉及圖表、不涉及判斷）
-      → 查 <mcp_catalog> 找到最合適的 MCP，一步完成。使用者的畫面只會看到文字回答。
-
-   ⑦ 複合分析（撈多個 MCP + 交叉比對 + 畫圖）
+   ⑥ 複合分析（撈多個 MCP + 交叉比對 + 畫圖）
       → execute_analysis(mode='auto')，結果可一鍵「儲存為 My Skill」。
 
    ⚠️ 禁止在 python_code 裡 import requests/os/sys/subprocess
