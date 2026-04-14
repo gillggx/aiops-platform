@@ -25,14 +25,20 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# v1 stage numbers
+# 9-Stage Pipeline mapping
+# Stage 1: Context Load
+# Stage 2: LLM Planning
+# Stage 3~6: Data Pipeline (emitted as pipeline_stage events from tool_execute)
+# Stage 7: Synthesis
+# Stage 8: Self-Critique
+# Stage 9: Memory
 _STAGE_MAP = {
     "load_context": 1,
-    "llm_call": 3,
-    "tool_execute": 3,
-    "synthesis": 4,
-    "self_critique": 5,
-    "memory_lifecycle": 6,
+    "llm_call": 2,
+    "tool_execute": 2,     # pipeline stages 3-6 are emitted separately
+    "synthesis": 7,
+    "self_critique": 8,
+    "memory_lifecycle": 9,
 }
 
 

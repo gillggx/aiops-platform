@@ -334,7 +334,11 @@ export function AICopilot({
           case "stage_update": {
             const stage  = ev.stage as number;
             const status = ev.status as "running" | "complete" | "error";
-            const label  = (ev.label as string) ?? `Stage ${stage}`;
+            const STAGE_NAMES: Record<number, string> = {
+              1: "Context", 2: "Planning", 3: "Retrieval", 4: "Transform",
+              5: "Compute", 6: "Presentation", 7: "Synthesis", 8: "Critique", 9: "Memory",
+            };
+            const label  = (ev.label as string) ?? STAGE_NAMES[stage] ?? `Stage ${stage}`;
             setStages((prev) => {
               const idx = prev.findIndex((s) => s.stage === stage);
               if (idx >= 0) {
@@ -447,14 +451,29 @@ export function AICopilot({
           }
 
           case "pipeline_stage": {
-            // 9-Stage Pipeline: each stage gets its own console log
+            // 9-Stage Pipeline: each stage gets its own console log + stage dot
+            const stageNum = (ev.stage as number) ?? 0;
             const icon = (ev.icon as string) ?? "▶";
-            const name = (ev.name as string) ?? `Stage ${ev.stage}`;
+            const name = (ev.name as string) ?? `Stage ${stageNum}`;
             const status = (ev.status as string) ?? "complete";
             const elapsed = (ev.elapsed as number) ?? 0;
             const summary = (ev.summary as string) ?? "";
             const statusIcon = status === "complete" ? "✅" : status === "error" ? "❌" : status === "skipped" ? "⏭️" : "🔄";
-            addLog(makeLog(icon, `${name} ${statusIcon} ${elapsed}s — ${summary}`, status === "error" ? "error" : "tool"));
+
+            // Add to stage indicators
+            const stageStatus = status === "complete" ? "complete" : status === "error" ? "error" : "running";
+            setStages((prev) => {
+              const idx = prev.findIndex((s) => s.stage === stageNum);
+              if (idx >= 0) {
+                const u = [...prev]; u[idx] = { stage: stageNum, label: name, status: stageStatus as "running" | "complete" | "error" }; return u;
+              }
+              return [...prev, { stage: stageNum, label: name, status: stageStatus as "running" | "complete" | "error" }];
+            });
+
+            // Add console log (skip if skipped)
+            if (status !== "skipped") {
+              addLog(makeLog(icon, `${name} ${statusIcon} ${elapsed}s — ${summary}`, status === "error" ? "error" : "tool"));
+            }
             break;
           }
 
