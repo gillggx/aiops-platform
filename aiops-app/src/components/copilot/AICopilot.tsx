@@ -121,9 +121,9 @@ function getContextPrompts(equipment: string | null | undefined): string[] {
     ];
   }
   return [
-    "目前所有機台狀態如何？",
-    "最近有哪些告警事件？",
-    "LOT-001 良率分析",
+    "EQP-01 的 APC etch_time_offset 趨勢",
+    "STEP_001 的 xbar_chart trend chart",
+    "EQP-05 列出OOC站點和SPC charts",
   ];
 }
 
@@ -442,10 +442,14 @@ export function AICopilot({
           }
 
           case "ui_config": {
-            // Generative UI: store visualization config
+            // Generative UI: store visualization config + extract queryInfo
             const cfg = ev.config as UIConfig;
             if (cfg && pendingFlatDataRef.current) {
               pendingFlatDataRef.current.uiConfig = cfg;
+              // Extract queryInfo from ui_config (set by pipeline_executor)
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const qi = (cfg as any).query_info;
+              if (qi) pendingFlatDataRef.current.queryInfo = qi;
             }
             break;
           }
@@ -518,12 +522,13 @@ export function AICopilot({
                 ...(rd ? { renderDecision: rd } : {}),
               }]);
 
-              // If we have flat data with a UI config, open DataExplorer in center panel
-              if (pending?.flatData && pending.metadata && pending.uiConfig) {
+              // Open DataExplorer if we have flat data with actual events
+              const hasEvents = (pending?.metadata?.total_events ?? 0) > 0 && (pending?.metadata?.available_datasets?.length ?? 0) > 0;
+              if (pending?.flatData && pending.metadata && hasEvents) {
                 onDataExplorer?.({
                   flatData: pending.flatData,
                   metadata: pending.metadata,
-                  uiConfig: pending.uiConfig,
+                  uiConfig: pending.uiConfig ?? undefined,
                   queryInfo: pending.queryInfo,
                 });
               }

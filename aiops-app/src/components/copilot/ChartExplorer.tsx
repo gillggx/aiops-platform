@@ -360,31 +360,74 @@ export function ChartExplorer({ flatData, metadata, uiConfig, onClose }: Props) 
         </div>
       ) : null}
 
-      {/* Table summary for non-chart datasets */}
-      {(activeDataset === "fdc_data" || activeDataset === "ec_data" || activeDataset === "recipe_data") && filteredData.length > 0 && (
-        <div style={{ maxHeight: 200, overflowY: "auto", padding: "0 16px 8px" }}>
+      {/* Data Table — collapsible, shows raw data */}
+      {!overlayMode && filteredData.length > 0 && (
+        <DataTableSection data={filteredData} datasetName={DATASET_LABELS[activeDataset] ?? activeDataset} />
+      )}
+    </div>
+  );
+}
+
+// ── Data Table Section (collapsible) ─────────────────────────────────────────
+
+function DataTableSection({ data, datasetName }: { data: Record<string, unknown>[]; datasetName: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const cols = Object.keys(data[0] ?? {});
+  const displayRows = expanded ? data.slice(0, 100) : data.slice(0, 5);
+
+  return (
+    <div style={{ borderTop: "1px solid #e2e8f0" }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          padding: "8px 16px", cursor: "pointer", fontSize: 12, fontWeight: 600,
+          color: "#718096", display: "flex", justifyContent: "space-between", alignItems: "center",
+          background: "#fafbfc",
+        }}
+      >
+        <span>📋 {datasetName} Data ({data.length} rows)</span>
+        <span style={{ fontSize: 10 }}>{expanded ? "▼ 收合" : "▶ 展開"}</span>
+      </div>
+      {(expanded || data.length <= 5) && (
+        <div style={{ maxHeight: 300, overflowY: "auto", overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr>
-                {Object.keys(filteredData[0]).filter(k => k !== "eventTime" && k !== "lotID").map((k) => (
-                  <th key={k} style={{ background: "#f7fafc", padding: "4px 8px", textAlign: "left", fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0" }}>
-                    {k}
-                  </th>
+                {cols.map((c) => (
+                  <th key={c} style={{
+                    background: "#f7fafc", padding: "4px 8px", textAlign: "left",
+                    fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0",
+                    whiteSpace: "nowrap", position: "sticky", top: 0,
+                  }}>{c}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredData.slice(0, 20).map((row, i) => (
+              {displayRows.map((row, i) => (
                 <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f7fafc" }}>
-                  {Object.entries(row).filter(([k]) => k !== "eventTime" && k !== "lotID").map(([k, v]) => (
-                    <td key={k} style={{ padding: "3px 8px", borderBottom: "1px solid #edf2f7" }}>
-                      {typeof v === "number" ? v.toFixed(4) : String(v ?? "—")}
-                    </td>
-                  ))}
+                  {cols.map((c) => {
+                    const v = row[c];
+                    let display: string;
+                    if (typeof v === "number") display = Number.isInteger(v) ? String(v) : v.toFixed(4);
+                    else if (typeof v === "boolean") display = v ? "true" : "false";
+                    else display = String(v ?? "—");
+                    // Truncate eventTime for readability
+                    if (c === "eventTime" && typeof v === "string") display = v.slice(0, 19);
+                    return (
+                      <td key={c} style={{ padding: "3px 8px", borderBottom: "1px solid #edf2f7", whiteSpace: "nowrap" }}>
+                        {display}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
+          {data.length > displayRows.length && (
+            <div style={{ padding: "4px 16px", fontSize: 10, color: "#a0aec0" }}>
+              Showing {displayRows.length} of {data.length} rows
+            </div>
+          )}
         </div>
       )}
     </div>
