@@ -534,23 +534,41 @@ class ToolDispatcher:
                         }
                     raw_result = await self._call_api("POST", f"/api/v1/execute/mcp/{mcp_id}", body=params)
                     # Flatten the result
+                    # Only flatten get_process_info (has events[]).
+                    # Other MCPs (get_process_summary, list_tools, etc.) return aggregated
+                    # data that LLM should read directly — no flattening needed.
+                    _FLATTEN_MCPS = {"get_process_info"}
                     try:
                         from app.services.data_flattener import flatten, build_llm_summary
                         od = raw_result.get("output_data", {}) if isinstance(raw_result, dict) else {}
                         raw_ds = od.get("_raw_dataset") or od.get("dataset") or []
-                        # Unwrap [{total, events}] envelope
                         flatten_input = raw_ds[0] if isinstance(raw_ds, list) and len(raw_ds) == 1 and isinstance(raw_ds[0], dict) else raw_ds
-                        flat_result = flatten(flatten_input)
-                        llm_summary = build_llm_summary(flat_result.metadata)
-                        return {
-                            "status": "success",
-                            "mcp_name": data_source,
-                            "llm_readable_data": llm_summary,
-                            "_flat_data": flat_result.to_dict(),
-                            "_flat_metadata": flat_result.metadata,
-                            "_visualization_hint": viz_hint,
-                            "_raw_result": raw_result,  # preserve for render_card
-                        }
+
+                        if data_source in _FLATTEN_MCPS and isinstance(flatten_input, dict) and flatten_input.get("events"):
+                            flat_result = flatten(flatten_input)
+                            llm_summary = build_llm_summary(flat_result.metadata)
+                            return {
+                                "status": "success",
+                                "mcp_name": data_source,
+                                "llm_readable_data": llm_summary,
+                                "_flat_data": flat_result.to_dict(),
+                                "_flat_metadata": flat_result.metadata,
+                                "_visualization_hint": viz_hint,
+                                "_raw_result": raw_result,
+                            }
+                        else:
+                            # Non-event MCPs: pass raw result directly to LLM
+                            import json as _json
+                            raw_text = _json.dumps(flatten_input, ensure_ascii=False, default=str)[:6000]
+                            return {
+                                "status": "success",
+                                "mcp_name": data_source,
+                                "llm_readable_data": raw_text,
+                                "_flat_data": None,
+                                "_flat_metadata": None,
+                                "_visualization_hint": None,
+                                "_raw_result": raw_result,
+                            }
                     except Exception as exc:
                         logger.exception("query_data flatten failed: %s", exc)
                         return {

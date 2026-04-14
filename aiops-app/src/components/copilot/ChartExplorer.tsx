@@ -54,13 +54,31 @@ const CHART_CONFIGS: Record<string, { x: string; y: string; group?: string; titl
 
 export function ChartExplorer({ flatData, metadata, uiConfig, onClose }: Props) {
   // Determine initial dataset from uiConfig or first available
-  const initialDs = uiConfig?.initial_view?.data_source
-    ?? metadata.available_datasets[0]
-    ?? "spc_data";
+  const isOverlay = uiConfig?.initial_view?.data_source === "overlay";
+  const initialDs = isOverlay
+    ? metadata.available_datasets[0] ?? "spc_data"
+    : (uiConfig?.initial_view?.data_source ?? metadata.available_datasets[0] ?? "spc_data");
 
   const [activeDataset, setActiveDataset] = useState(initialDs);
+  const [overlayMode, setOverlayMode] = useState(isOverlay);
   const [filterKey, setFilterKey] = useState<string>("");
   const [filterValue, setFilterValue] = useState<string>("");
+
+  // Overlay state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const overlayHint = uiConfig?.initial_view as any;
+  const [overlayLeft, setOverlayLeft] = useState({
+    dataset: overlayHint?.left?.dataset ?? "spc_data",
+    field: overlayHint?.left?.field ?? "value",
+    filterKey: Object.keys(overlayHint?.left?.filter ?? {})[0] ?? "",
+    filterVal: Object.values(overlayHint?.left?.filter ?? {})[0] as string ?? "",
+  });
+  const [overlayRight, setOverlayRight] = useState({
+    dataset: overlayHint?.right?.dataset ?? "apc_data",
+    field: overlayHint?.right?.field ?? "value",
+    filterKey: Object.keys(overlayHint?.right?.filter ?? {})[0] ?? "",
+    filterVal: Object.values(overlayHint?.right?.filter ?? {})[0] as string ?? "",
+  });
 
   // Get current dataset
   const rawData = flatData[activeDataset] ?? [];
@@ -190,21 +208,113 @@ export function ChartExplorer({ flatData, metadata, uiConfig, onClose }: Props) 
         {metadata.available_datasets.map((ds) => (
           <button
             key={ds}
-            onClick={() => { setActiveDataset(ds); setFilterKey(""); setFilterValue(""); }}
+            onClick={() => { setOverlayMode(false); setActiveDataset(ds); setFilterKey(""); setFilterValue(""); }}
             style={{
-              padding: "8px 16px", fontSize: 12, fontWeight: activeDataset === ds ? 700 : 400,
-              color: activeDataset === ds ? "#2b6cb0" : "#718096", cursor: "pointer",
-              borderBottom: activeDataset === ds ? "2px solid #2b6cb0" : "2px solid transparent",
+              padding: "8px 16px", fontSize: 12,
+              fontWeight: !overlayMode && activeDataset === ds ? 700 : 400,
+              color: !overlayMode && activeDataset === ds ? "#2b6cb0" : "#718096", cursor: "pointer",
+              borderBottom: !overlayMode && activeDataset === ds ? "2px solid #2b6cb0" : "2px solid transparent",
               background: "transparent", border: "none",
             }}
           >
             {DATASET_LABELS[ds] ?? ds}
           </button>
         ))}
+        {/* Overlay tab — only if >= 2 datasets */}
+        {metadata.available_datasets.length >= 2 && (
+          <button
+            onClick={() => setOverlayMode(true)}
+            style={{
+              padding: "8px 16px", fontSize: 12,
+              fontWeight: overlayMode ? 700 : 400,
+              color: overlayMode ? "#9f7aea" : "#718096", cursor: "pointer",
+              borderBottom: overlayMode ? "2px solid #9f7aea" : "2px solid transparent",
+              background: "transparent", border: "none",
+            }}
+          >
+            +Overlay
+          </button>
+        )}
       </div>
 
+      {/* ── Overlay Mode ── */}
+      {overlayMode && (
+        <div>
+          <div style={{ display: "flex", gap: 12, padding: "10px 16px", borderBottom: "1px solid #f0f0f0", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#718096" }}>Left Y:</span>
+            <select value={overlayLeft.dataset} onChange={(e) => setOverlayLeft(p => ({...p, dataset: e.target.value}))}
+              style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid #cbd5e0" }}>
+              {metadata.available_datasets.map(ds => <option key={ds} value={ds}>{DATASET_LABELS[ds]}</option>)}
+            </select>
+            <select value={overlayLeft.filterVal} onChange={(e) => {
+              const cfg = CHART_CONFIGS[overlayLeft.dataset];
+              setOverlayLeft(p => ({...p, filterKey: cfg?.group ?? "", filterVal: e.target.value}));
+            }} style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid #cbd5e0" }}>
+              <option value="">All</option>
+              {[...new Set((flatData[overlayLeft.dataset] ?? []).map((r: Record<string,unknown>) => String(r[CHART_CONFIGS[overlayLeft.dataset]?.group ?? ""] ?? "")))].filter(Boolean).sort().map(v =>
+                <option key={v} value={v}>{v}</option>
+              )}
+            </select>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#718096", marginLeft: 8 }}>Right Y:</span>
+            <select value={overlayRight.dataset} onChange={(e) => setOverlayRight(p => ({...p, dataset: e.target.value}))}
+              style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid #cbd5e0" }}>
+              {metadata.available_datasets.map(ds => <option key={ds} value={ds}>{DATASET_LABELS[ds]}</option>)}
+            </select>
+            <select value={overlayRight.filterVal} onChange={(e) => {
+              const cfg = CHART_CONFIGS[overlayRight.dataset];
+              setOverlayRight(p => ({...p, filterKey: cfg?.group ?? "", filterVal: e.target.value}));
+            }} style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid #cbd5e0" }}>
+              <option value="">All</option>
+              {[...new Set((flatData[overlayRight.dataset] ?? []).map((r: Record<string,unknown>) => String(r[CHART_CONFIGS[overlayRight.dataset]?.group ?? ""] ?? "")))].filter(Boolean).sort().map(v =>
+                <option key={v} value={v}>{v}</option>
+              )}
+            </select>
+          </div>
+          {(() => {
+            const leftCfg = CHART_CONFIGS[overlayLeft.dataset] ?? { x: "eventTime", y: "value" };
+            const rightCfg = CHART_CONFIGS[overlayRight.dataset] ?? { x: "eventTime", y: "value" };
+            let leftData = flatData[overlayLeft.dataset] ?? [];
+            let rightData = flatData[overlayRight.dataset] ?? [];
+            if (overlayLeft.filterKey && overlayLeft.filterVal)
+              leftData = leftData.filter((r: Record<string,unknown>) => String(r[overlayLeft.filterKey]) === overlayLeft.filterVal);
+            if (overlayRight.filterKey && overlayRight.filterVal)
+              rightData = rightData.filter((r: Record<string,unknown>) => String(r[overlayRight.filterKey]) === overlayRight.filterVal);
+            const leftLabel = overlayLeft.filterVal || DATASET_LABELS[overlayLeft.dataset] || overlayLeft.dataset;
+            const rightLabel = overlayRight.filterVal || DATASET_LABELS[overlayRight.dataset] || overlayRight.dataset;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const overlayTraces: any[] = [
+              { x: leftData.map((r: Record<string,unknown>) => r[leftCfg.x]), y: leftData.map((r: Record<string,unknown>) => r[leftCfg.y]),
+                name: leftLabel, type: "scatter", mode: "lines+markers",
+                line: { color: "#4299e1", width: 1.5 }, marker: { size: 4 }, yaxis: "y" },
+              { x: rightData.map((r: Record<string,unknown>) => r[rightCfg.x]), y: rightData.map((r: Record<string,unknown>) => r[rightCfg.y]),
+                name: rightLabel, type: "scatter", mode: "lines+markers",
+                line: { color: "#ed8936", width: 1.5 }, marker: { size: 4 }, yaxis: "y2" },
+            ];
+            return (
+              <Plot
+                data={overlayTraces}
+                layout={{
+                  autosize: true, height: 350,
+                  margin: { l: 60, r: 60, t: 30, b: 50 },
+                  paper_bgcolor: "transparent", plot_bgcolor: "#fafbfc",
+                  font: { family: "Inter, sans-serif", size: 11 },
+                  showlegend: true, legend: { orientation: "h" as const, y: -0.2 },
+                  xaxis: { title: "eventTime", gridcolor: "#e2e8f0" },
+                  yaxis: { title: leftLabel, titlefont: { color: "#4299e1" }, tickfont: { color: "#4299e1" }, gridcolor: "#e2e8f0" },
+                  yaxis2: { title: rightLabel, titlefont: { color: "#ed8936" }, tickfont: { color: "#ed8936" }, overlaying: "y" as const, side: "right" as const },
+                }}
+                config={{ responsive: true, displayModeBar: false }}
+                style={{ width: "100%" }}
+                useResizeHandler
+              />
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── Single Dataset Mode ── */}
       {/* Filter Controls */}
-      {groupField && groupValues.length > 1 && (
+      {!overlayMode && groupField && groupValues.length > 1 && (
         <div style={{ display: "flex", gap: 8, padding: "8px 16px", borderBottom: "1px solid #f0f0f0", alignItems: "center" }}>
           <span style={{ fontSize: 11, color: "#718096" }}>Filter:</span>
           <select
@@ -223,8 +333,8 @@ export function ChartExplorer({ flatData, metadata, uiConfig, onClose }: Props) 
         </div>
       )}
 
-      {/* Chart */}
-      {filteredData.length > 0 ? (
+      {/* Chart (single dataset mode) */}
+      {!overlayMode && filteredData.length > 0 ? (
         <Plot
           data={allTraces}
           layout={{
@@ -244,11 +354,11 @@ export function ChartExplorer({ flatData, metadata, uiConfig, onClose }: Props) 
           style={{ width: "100%" }}
           useResizeHandler
         />
-      ) : (
+      ) : !overlayMode ? (
         <div style={{ padding: 40, textAlign: "center", color: "#a0aec0", fontSize: 13 }}>
           No data for {DATASET_LABELS[activeDataset] ?? activeDataset}
         </div>
-      )}
+      ) : null}
 
       {/* Table summary for non-chart datasets */}
       {(activeDataset === "fdc_data" || activeDataset === "ec_data" || activeDataset === "recipe_data") && filteredData.length > 0 && (

@@ -111,6 +111,8 @@ _DEFAULT_SOUL = """\
         前端自動渲染 Data Explorer，使用者可自行切換維度（SPC/APC/DC/...）
 
       ★ 使用者只需文字回答 → 不給 visualization_hint
+        「我想看製程資訊」「OOC 率多少」「狀況怎樣」→ 不需要圖，用文字回答
+        只有使用者明確提到 chart、trend、圖、趨勢 → 才給 visualization_hint
 
       visualization_hint.data_source 可選值：
         spc_data, apc_data, dc_data, recipe_data, fdc_data, ec_data
@@ -136,10 +138,13 @@ _DEFAULT_SOUL = """\
    ════════════════════════════════════════════════════════════════
    **原則：能推斷就不問，真的缺關鍵資訊才問，而且一次問完。**
 
-   ★ 預設值（直接用，不要問）：
+   ★ 預設值（直接用，不要問）— 適用所有工具（query_data + execute_analysis）：
    - 時間範圍：沒指定 → 24h。說「最近」「近期」「今天」→ 24h
-   - 機台範圍：沒指定 → 全廠。說「這台」但有 context → 用 context 的機台
-   - limit：沒指定 → 50（一般查詢）或 200（需要全面分析時）
+   - 機台範圍：沒指定 → 全廠所有機台。
+   - 站點範圍：沒指定 → 全部站點。
+   - 參數範圍：沒指定 → 全部參數。
+   - limit：沒指定 → 50（一般）或 200（全面分析）
+   ★ 這些預設值同樣適用 execute_analysis 的 description — 直接寫進去，不要反問。
 
    ★ 什麼時候必須反問：
    - 使用者說「這台」但 context 裡沒有機台 → 問「哪台機台？」
@@ -506,10 +511,14 @@ class ContextLoader:
         catalog in the system prompt.
         """
         try:
+            # Only load My Skills (binding_type="none") for copilot.
+            # DR (alarm) and AP (event) skills are executed by their own pipelines,
+            # not by copilot — including them causes LLM to pick wrong skills.
             result = await self._db.execute(
                 select(SkillDefinitionModel)
                 .where(SkillDefinitionModel.visibility == "public")
                 .where(SkillDefinitionModel.is_active == True)
+                .where(SkillDefinitionModel.binding_type == "none")
                 .order_by(SkillDefinitionModel.id)
             )
             skills = result.scalars().all()

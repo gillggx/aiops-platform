@@ -16,6 +16,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.services.agent_orchestrator_v2.state import MAX_ITERATIONS
 from app.services.tool_dispatcher import TOOL_SCHEMAS
 
+# Tools hidden from LLM — still available internally (e.g. skill code calls execute_mcp)
+_LLM_HIDDEN_TOOLS = {"execute_mcp"}
+LLM_TOOL_SCHEMAS = [t for t in TOOL_SCHEMAS if t["name"] not in _LLM_HIDDEN_TOOLS]
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +99,7 @@ async def llm_call_node(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
             system=system,
             messages=v1_messages,
             max_tokens=8192,
-            tools=TOOL_SCHEMAS,
+            tools=LLM_TOOL_SCHEMAS,
         )
     except Exception as exc:
         logger.exception("LLM call failed at iteration %d", iteration)
