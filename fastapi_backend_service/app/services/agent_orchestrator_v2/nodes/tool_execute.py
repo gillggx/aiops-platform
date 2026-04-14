@@ -71,6 +71,15 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
         preflight_err = await _preflight_validate(db, tool_name, tool_input)
         if preflight_err:
             result = preflight_err
+        elif tool_name == "plan_pipeline":
+            # Run the 4-stage data pipeline (Stage 3~6)
+            from app.services.pipeline_executor import execute_pipeline
+            from app.config import get_settings
+            result = await execute_pipeline(
+                plan=tool_input,
+                db_session=db,
+                sim_url=get_settings().ONTOLOGY_SIM_URL,
+            )
         else:
             # Inject flat_data into execute_analysis so sandbox can read it directly
             if tool_name == "execute_analysis" and state.get("flat_data"):
@@ -116,8 +125,24 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
                     else:
                         result["_data_overview"] = overview
 
+        # Handle plan_pipeline: stash flat_data + pipeline_cards
+        if tool_name == "plan_pipeline" and isinstance(result, dict) and result.get("status") == "success":
+            _flat_data = result.get("flat_data")
+            _flat_meta = result.get("flat_metadata")
+            _ui_cfg = result.get("ui_config")
+            _pipeline_cards = result.get("pipeline_cards", [])
+
+            card = {
+                "type": "pipeline",
+                "pipeline_cards": _pipeline_cards,
+                "flat_data": _flat_data,
+                "flat_metadata": _flat_meta,
+                "ui_config": _ui_cfg,
+            }
+            new_render_cards.append(card)
+
         # Handle query_data: stash flat_data in state + build render_card with ui_config
-        if tool_name == "query_data" and isinstance(result, dict) and result.get("_flat_data"):
+        elif tool_name == "query_data" and isinstance(result, dict) and result.get("_flat_data"):
             _flat_data = result.get("_flat_data")
             _flat_meta = result.get("_flat_metadata")
             _viz_hint = result.get("_visualization_hint")
@@ -186,12 +211,12 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
             name=tool_name,
         ))
 
-    # Collect flat_data/ui_config from query_data results
+    # Collect flat_data/ui_config from pipeline or query_data results
     _state_flat_data = None
     _state_flat_meta = None
     _state_ui_config = None
     for card in new_render_cards:
-        if card.get("type") == "query_data":
+        if card.get("type") in ("query_data", "pipeline"):
             _state_flat_data = card.get("flat_data")
             _state_flat_meta = card.get("flat_metadata")
             _state_ui_config = card.get("ui_config")

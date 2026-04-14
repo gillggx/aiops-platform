@@ -25,6 +25,58 @@ logger = logging.getLogger(__name__)
 
 TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
+        "name": "plan_pipeline",
+        "description": (
+            "規劃並執行一個 Data Pipeline。系統會自動：\n"
+            "  Stage 3: 撈資料（呼叫 MCP）\n"
+            "  Stage 4: 扁平化 + 自訂轉換（filter/join）\n"
+            "  Stage 5: 統計計算（回歸/OOC check — 可選）\n"
+            "  Stage 6: 資料呈現（DataExplorer 互動圖表 — 可選）\n"
+            "\n"
+            "你只需要規劃 pipeline，系統自動執行每個 stage。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_retrieval": {
+                    "type": "object",
+                    "description": "Stage 3: 撈資料。mcp=MCP name, params=查詢參數",
+                    "properties": {
+                        "mcp": {"type": "string", "description": "MCP name (get_process_info / get_process_summary / list_tools)"},
+                        "params": {"type": "object", "description": "查詢參數 e.g. {equipment_id:'EQP-01', step:'STEP_001', since:'24h'}"},
+                    },
+                    "required": ["mcp"],
+                },
+                "data_transform": {
+                    "type": "object",
+                    "description": "Stage 4: 自訂資料轉換（可選）。不給=只做基礎扁平化。用自然語言描述轉換邏輯。",
+                    "properties": {
+                        "description": {"type": "string", "description": "轉換需求描述，e.g. '篩選 xbar_chart，與 APC rf_power_bias 按 eventTime join'"},
+                    },
+                },
+                "compute": {
+                    "type": "object",
+                    "description": "Stage 5: 統計計算（可選）。不給=跳過。",
+                    "properties": {
+                        "description": {"type": "string", "description": "計算需求，e.g. '對每種 chart_type vs rf_power_bias 做線性回歸，計算 R²'"},
+                        "type": {"type": "string", "description": "計算類型 e.g. linear_regression / ooc_check / correlation / normal_distribution"},
+                    },
+                },
+                "presentation": {
+                    "type": "object",
+                    "description": "Stage 6: 資料呈現（可選）。不給=純文字回答，不開 DataExplorer。使用者明確要看圖/趨勢才給。",
+                    "properties": {
+                        "data_source": {"type": "string", "description": "spc_data / apc_data / dc_data / recipe_data / fdc_data / ec_data / processed_data / overlay"},
+                        "chart_type": {"type": "string", "description": "line / scatter / bar / spc (預設 line)"},
+                        "filter": {"type": "object", "description": "篩選條件 e.g. {chart_type:'xbar_chart'}"},
+                        "group_by": {"type": "string"},
+                    },
+                },
+            },
+            "required": ["data_retrieval"],
+        },
+    },
+    {
         "name": "execute_skill",
         "description": (
             "執行一個已登錄的診斷技能 (Skill)，自動撈取資料並執行診斷。"

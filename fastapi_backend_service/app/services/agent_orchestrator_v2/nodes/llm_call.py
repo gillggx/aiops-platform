@@ -16,8 +16,11 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.services.agent_orchestrator_v2.state import MAX_ITERATIONS
 from app.services.tool_dispatcher import TOOL_SCHEMAS
 
-# Tools hidden from LLM — still available internally (e.g. skill code calls execute_mcp)
-_LLM_HIDDEN_TOOLS = {"execute_mcp"}
+# Tools hidden from LLM — still available internally
+# execute_mcp: internal only (skill code uses it)
+# query_data: replaced by plan_pipeline
+# execute_analysis: replaced by plan_pipeline Stage 4+5
+_LLM_HIDDEN_TOOLS = {"execute_mcp", "query_data", "execute_analysis"}
 LLM_TOOL_SCHEMAS = [t for t in TOOL_SCHEMAS if t["name"] not in _LLM_HIDDEN_TOOLS]
 
 logger = logging.getLogger(__name__)

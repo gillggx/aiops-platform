@@ -446,6 +446,18 @@ export function AICopilot({
             break;
           }
 
+          case "pipeline_stage": {
+            // 9-Stage Pipeline: each stage gets its own console log
+            const icon = (ev.icon as string) ?? "▶";
+            const name = (ev.name as string) ?? `Stage ${ev.stage}`;
+            const status = (ev.status as string) ?? "complete";
+            const elapsed = (ev.elapsed as number) ?? 0;
+            const summary = (ev.summary as string) ?? "";
+            const statusIcon = status === "complete" ? "✅" : status === "error" ? "❌" : status === "skipped" ? "⏭️" : "🔄";
+            addLog(makeLog(icon, `${name} ${statusIcon} ${elapsed}s — ${summary}`, status === "error" ? "error" : "tool"));
+            break;
+          }
+
           case "memory_write": {
             const content = (ev.fix_rule ?? ev.content ?? "") as string;
             addLog(makeLog("💡", `[${ev.memory_type ?? ev.source ?? "mem"}] ${content.slice(0, 100)}`, "memory"));

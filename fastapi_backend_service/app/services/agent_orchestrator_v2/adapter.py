@@ -235,8 +235,38 @@ async def adapt_events(
 
                     yield done_event
 
-                    # Emit flat_data + ui_config for query_data (Generative UI)
-                    if card and card.get("type") == "query_data":
+                    # Emit pipeline stage events (Generative UI)
+                    if card and card.get("type") == "pipeline":
+                        # Emit each pipeline stage as its own event
+                        for pc in card.get("pipeline_cards", []):
+                            yield {
+                                "type": "pipeline_stage",
+                                "stage": pc.get("stage"),
+                                "name": pc.get("name"),
+                                "icon": pc.get("icon"),
+                                "status": pc.get("status"),
+                                "elapsed": pc.get("elapsed"),
+                                "summary": pc.get("summary"),
+                                "detail": pc.get("detail"),
+                            }
+                        # Emit flat_data + ui_config
+                        flat_data = card.get("flat_data")
+                        flat_meta = card.get("flat_metadata")
+                        ui_config = card.get("ui_config")
+                        if flat_data and flat_meta:
+                            yield {
+                                "type": "flat_data",
+                                "flat_data": flat_data,
+                                "metadata": flat_meta,
+                            }
+                        if ui_config:
+                            yield {
+                                "type": "ui_config",
+                                "config": ui_config,
+                            }
+
+                    elif card and card.get("type") == "query_data":
+                        # Legacy query_data path
                         flat_data = card.get("flat_data")
                         flat_meta = card.get("flat_metadata")
                         ui_config = card.get("ui_config")
