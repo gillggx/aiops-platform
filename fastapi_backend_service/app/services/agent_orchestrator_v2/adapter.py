@@ -228,6 +228,24 @@ async def adapt_events(
                             }
 
                     yield done_event
+
+                    # Emit flat_data + ui_config for query_data (Generative UI)
+                    if card and card.get("type") == "query_data":
+                        flat_data = card.get("flat_data")
+                        flat_meta = card.get("flat_metadata")
+                        ui_config = card.get("ui_config")
+                        if flat_data and flat_meta:
+                            yield {
+                                "type": "flat_data",
+                                "flat_data": flat_data,
+                                "metadata": flat_meta,
+                            }
+                        if ui_config:
+                            yield {
+                                "type": "ui_config",
+                                "config": ui_config,
+                            }
+
                 if stage:
                     yield _stage_event(stage, "complete")
 

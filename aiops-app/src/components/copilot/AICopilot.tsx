@@ -6,7 +6,9 @@ import { isValidContract, isAgentAction, isHandoffAction } from "aiops-contract"
 import { consumeSSE } from "@/lib/sse";
 import { ContractCard } from "./ContractCard";
 import { ChartIntentRenderer, type ChartIntent } from "./ChartIntentRenderer";
+import { ChartExplorer } from "./ChartExplorer";
 import type { UiRender } from "@/components/McpChartRenderer";
+import type { FlatDataMetadata, UIConfig } from "@/context/FlatDataContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -48,12 +50,17 @@ type RenderDecisionMeta = {
 
 interface ChatMessage {
   id: number;
-  role: "user" | "agent" | "mcp_result" | "chart_intents";
+  role: "user" | "agent" | "mcp_result" | "chart_intents" | "chart_explorer";
   content: string;
   contract?: AIOpsReportContract;
   mcpResult?: McpResult;
   chartIntents?: ChartIntent[];
   renderDecision?: RenderDecisionMeta;
+  // Generative UI
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  flatData?: Record<string, any[]>;
+  flatMetadata?: FlatDataMetadata;
+  uiConfig?: UIConfig;
 }
 
 interface HitlRequest {
@@ -252,6 +259,8 @@ export function AICopilot({
   const chatEndRef   = useRef<HTMLDivElement>(null);
   const logsEndRef   = useRef<HTMLDivElement>(null);
   const pendingRenderDecisionRef = useRef<RenderDecisionMeta | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pendingFlatDataRef = useRef<{ flatData: Record<string, any[]>; metadata: FlatDataMetadata; uiConfig: UIConfig | null } | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -406,6 +415,31 @@ export function AICopilot({
             break;
           }
 
+          case "flat_data": {
+            // Generative UI: cache flat data for ChartExplorer
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fd = ev.flat_data as Record<string, any[]>;
+            const meta = ev.metadata as FlatDataMetadata;
+            if (fd && meta) {
+              pendingFlatDataRef.current = {
+                flatData: fd,
+                metadata: meta,
+                uiConfig: pendingFlatDataRef.current?.uiConfig ?? null,
+              };
+              addLog(makeLog("📊", `Data flattened: ${meta.total_events} events, ${meta.available_datasets?.length ?? 0} datasets`, "tool"));
+            }
+            break;
+          }
+
+          case "ui_config": {
+            // Generative UI: store visualization config
+            const cfg = ev.config as UIConfig;
+            if (cfg && pendingFlatDataRef.current) {
+              pendingFlatDataRef.current.uiConfig = cfg;
+            }
+            break;
+          }
+
           case "memory_write": {
             const content = (ev.fix_rule ?? ev.content ?? "") as string;
             addLog(makeLog("💡", `[${ev.memory_type ?? ev.source ?? "mem"}] ${content.slice(0, 100)}`, "memory"));
@@ -435,13 +469,27 @@ export function AICopilot({
                 contract,
               }]);
             } else if (displayText) {
-              // Attach pending render_decision from execute_mcp (chip buttons for chart switching)
+              // Attach flat data from query_data (Generative UI ChartExplorer)
+              const pending = pendingFlatDataRef.current;
+              pendingFlatDataRef.current = null;
               const rd = pendingRenderDecisionRef.current;
               pendingRenderDecisionRef.current = null;
+
+              // Add text message
               setChatHistory((prev) => [...prev, {
                 id: nextId(), role: "agent", content: displayText,
                 ...(rd ? { renderDecision: rd } : {}),
               }]);
+
+              // If we have flat data with a UI config, add ChartExplorer message
+              if (pending?.flatData && pending.metadata && pending.uiConfig) {
+                setChatHistory((prev) => [...prev, {
+                  id: nextId(), role: "chart_explorer" as const, content: "",
+                  flatData: pending.flatData,
+                  flatMetadata: pending.metadata,
+                  uiConfig: pending.uiConfig ?? undefined,
+                }]);
+              }
             }
             addLog(makeLog("💬", `Synthesis 完成 (${text.length} chars)`, "info"));
             break;
@@ -649,7 +697,15 @@ export function AICopilot({
                 alignItems: msg.role === "user" ? "flex-end" : "flex-start",
               }}
             >
-              {msg.role === "chart_intents" && msg.chartIntents ? (
+              {msg.role === "chart_explorer" && msg.flatData && msg.flatMetadata ? (
+                <div style={{ width: "100%", maxWidth: "100%" }}>
+                  <ChartExplorer
+                    flatData={msg.flatData}
+                    metadata={msg.flatMetadata}
+                    uiConfig={msg.uiConfig}
+                  />
+                </div>
+              ) : msg.role === "chart_intents" && msg.chartIntents ? (
                 <div style={{ width: "100%", maxWidth: "90%" }}>
                   <ChartIntentRenderer charts={msg.chartIntents} />
                 </div>

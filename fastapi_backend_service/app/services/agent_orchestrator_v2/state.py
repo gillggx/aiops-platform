@@ -66,6 +66,11 @@ AGENT_STATE_SCHEMA = {
     # ── Memory lifecycle ────────────────────────────────────────────
     "cited_memory_ids": List[int],
     "memory_write_scheduled": bool,
+
+    # ── Generative UI (data pipeline) ─────────────────────────────
+    "flat_data": Optional[Dict[str, Any]],     # FlattenedResult.to_dict()
+    "flat_metadata": Optional[Dict[str, Any]], # metadata for LLM + frontend
+    "ui_config": Optional[Dict[str, Any]],     # ChartExplorer configuration
 }
 
 
@@ -92,6 +97,9 @@ DEFAULT_STATE: Dict[str, Any] = {
     "cited_memory_ids": [],
     "memory_write_scheduled": False,
     "canvas_overrides": None,
+    "flat_data": None,
+    "flat_metadata": None,
+    "ui_config": None,
 }
 
 

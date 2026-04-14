@@ -96,6 +96,11 @@ class GraphState(TypedDict, total=False):
     cited_memory_ids: Annotated[List[int], _replace]
     memory_write_scheduled: Annotated[bool, _replace]
 
+    # Generative UI (data pipeline)
+    flat_data: Annotated[Optional[Dict[str, Any]], _replace]
+    flat_metadata: Annotated[Optional[Dict[str, Any]], _replace]
+    ui_config: Annotated[Optional[Dict[str, Any]], _replace]
+
 logger = logging.getLogger(__name__)
 
 

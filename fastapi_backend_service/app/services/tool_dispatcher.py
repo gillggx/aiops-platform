@@ -44,17 +44,54 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "query_data",
+        "description": (
+            "查詢製程資料。系統自動：呼叫 MCP → 扁平化資料 → 產生互動圖表。\n"
+            "你只需指定 data_source（<mcp_catalog> 中的 MCP name）和查詢參數。\n"
+            "回傳的是扁平化後的 metadata（OOC 統計、可用欄位等），不是 raw data。\n"
+            "圖表由前端 ChartExplorer 自動渲染，你不需要寫任何圖表 code。\n"
+            "\n"
+            "== 回傳格式 ==\n"
+            "metadata: {total_events, ooc_count, ooc_rate, ooc_by_step, ooc_by_tool, available_datasets}\n"
+            "你的工作：根據 metadata 用文字回答使用者的問題。\n"
+            "\n"
+            "== 可選：visualization_hint ==\n"
+            "如果使用者想看圖，加上 visualization_hint 告訴前端初始顯示什麼：\n"
+            '  例：{"data_source": "spc_data", "filter": {"chart_type": "xbar_chart"}}\n'
+            '  例：{"data_source": "apc_data", "filter": {"param_name": "etch_time_offset"}}\n'
+            "不給 hint 時前端不顯示圖表（純文字回答）。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_source": {
+                    "type": "string",
+                    "description": "MCP 名稱，填入 <mcp_catalog> 中的 name（如 'get_process_info', 'get_process_summary', 'list_tools'）",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "查詢參數，如 {equipment_id: 'EQP-01', since: '24h'}",
+                },
+                "visualization_hint": {
+                    "type": "object",
+                    "description": "可選。告訴前端要顯示什麼圖表。不給 = 純文字回答。",
+                },
+            },
+            "required": ["data_source", "params"],
+        },
+    },
+    {
         "name": "execute_mcp",
         "description": (
-            "直接查詢底層資料源，回傳 raw data（不產生圖表）。"
-            "適合純資料查看（如：機台清單、系統狀態）。"
-            "⚠️ 如果使用者需要圖表或資料處理，應該用 execute_analysis 而非 execute_mcp。"
+            "（內部工具）直接查詢底層資料源，回傳 raw data。"
+            "⚠️ 優先使用 query_data — 它會自動扁平化資料並產生互動圖表。"
+            "execute_mcp 只在 query_data 不支援的特殊場景使用。"
             "mcp_name 必填，填入 <mcp_catalog> 中的 name 欄位。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "mcp_name": {"type": "string", "description": "MCP 名稱，必須與 <mcp_catalog> 中的 name 完全相符，例如 'get_tool_trajectory'"},
+                "mcp_name": {"type": "string", "description": "MCP 名稱"},
                 "params": {"type": "object", "description": "MCP 輸入參數"},
             },
             "required": ["mcp_name", "params"],
@@ -482,6 +519,49 @@ class ToolDispatcher:
                         f"/api/v1/execute/skill/{tool_input['skill_id']}",
                         body=tool_input.get("params", {}),
                     )
+                case "query_data":
+                    # query_data = execute_mcp + flatten + metadata
+                    data_source = tool_input.get("data_source") or tool_input.get("mcp_name", "")
+                    params = tool_input.get("params", {})
+                    viz_hint = tool_input.get("visualization_hint")
+                    # Resolve MCP and call it
+                    mcp_id = await self._resolve_mcp_id({"mcp_name": data_source})
+                    if mcp_id is None:
+                        return {
+                            "status": "error",
+                            "code": "MCP_NOT_FOUND",
+                            "message": f"⚠️ 找不到 MCP '{data_source}'。請確認 <mcp_catalog> 中的 name 欄位。",
+                        }
+                    raw_result = await self._call_api("POST", f"/api/v1/execute/mcp/{mcp_id}", body=params)
+                    # Flatten the result
+                    try:
+                        from app.services.data_flattener import flatten, build_llm_summary
+                        od = raw_result.get("output_data", {}) if isinstance(raw_result, dict) else {}
+                        raw_ds = od.get("_raw_dataset") or od.get("dataset") or []
+                        # Unwrap [{total, events}] envelope
+                        flatten_input = raw_ds[0] if isinstance(raw_ds, list) and len(raw_ds) == 1 and isinstance(raw_ds[0], dict) else raw_ds
+                        flat_result = flatten(flatten_input)
+                        llm_summary = build_llm_summary(flat_result.metadata)
+                        return {
+                            "status": "success",
+                            "mcp_name": data_source,
+                            "llm_readable_data": llm_summary,
+                            "_flat_data": flat_result.to_dict(),
+                            "_flat_metadata": flat_result.metadata,
+                            "_visualization_hint": viz_hint,
+                            "_raw_result": raw_result,  # preserve for render_card
+                        }
+                    except Exception as exc:
+                        logger.exception("query_data flatten failed: %s", exc)
+                        return {
+                            "status": "success",
+                            "mcp_name": data_source,
+                            "llm_readable_data": str(raw_result)[:4000],
+                            "_flat_data": None,
+                            "_flat_metadata": None,
+                            "_visualization_hint": viz_hint,
+                            "_raw_result": raw_result,
+                        }
                 case "execute_mcp":
                     mcp_id = await self._resolve_mcp_id(tool_input)
                     if mcp_id is None:

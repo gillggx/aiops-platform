@@ -113,10 +113,33 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
                     else:
                         result["_data_overview"] = overview
 
-        # Build render card (for SSE events)
-        render_card = _build_render_card(tool_name, tool_input, result)
-        if render_card:
-            new_render_cards.append(render_card)
+        # Handle query_data: stash flat_data in state + build render_card with ui_config
+        if tool_name == "query_data" and isinstance(result, dict) and result.get("_flat_data"):
+            _flat_data = result.get("_flat_data")
+            _flat_meta = result.get("_flat_metadata")
+            _viz_hint = result.get("_visualization_hint")
+            # Build UI config from viz_hint
+            _ui_config = None
+            if _viz_hint and isinstance(_viz_hint, dict):
+                _ui_config = {
+                    "ui_component": "ChartExplorer",
+                    "initial_view": _viz_hint,
+                    "available_datasets": _flat_meta.get("available_datasets", []) if _flat_meta else [],
+                }
+            # Build render card for SSE
+            card = {
+                "type": "query_data",
+                "mcp_name": result.get("mcp_name", ""),
+                "flat_data": _flat_data,
+                "flat_metadata": _flat_meta,
+                "ui_config": _ui_config,
+            }
+            new_render_cards.append(card)
+        else:
+            # Build render card (for SSE events)
+            render_card = _build_render_card(tool_name, tool_input, result)
+            if render_card:
+                new_render_cards.append(render_card)
 
         # Check if chart was rendered (via _notify_chart_rendered side effect)
         if isinstance(result, dict) and result.get("_chart_rendered"):
@@ -150,15 +173,31 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
             name=tool_name,
         ))
 
-    return {
+    # Collect flat_data/ui_config from query_data results
+    _state_flat_data = None
+    _state_flat_meta = None
+    _state_ui_config = None
+    for card in new_render_cards:
+        if card.get("type") == "query_data":
+            _state_flat_data = card.get("flat_data")
+            _state_flat_meta = card.get("flat_metadata")
+            _state_ui_config = card.get("ui_config")
+
+    result_state: Dict[str, Any] = {
         "messages": tool_messages,
-        # _extend_list reducer will append these to the existing lists
         "tools_used": new_tools_used,
         "render_cards": new_render_cards,
         "chart_already_rendered": chart_rendered,
         "last_spc_result": last_spc,
         "force_synthesis": force_synth or state.get("force_synthesis", False),
     }
+    if _state_flat_data:
+        result_state["flat_data"] = _state_flat_data
+        result_state["flat_metadata"] = _state_flat_meta
+    if _state_ui_config:
+        result_state["ui_config"] = _state_ui_config
+
+    return result_state
 
 
 def _trim_result_for_llm(result: Any, max_chars: int = 4000) -> str:
