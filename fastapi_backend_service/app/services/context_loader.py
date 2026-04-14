@@ -91,7 +91,7 @@ _DEFAULT_SOUL = """\
     ✅ 上限：3-5 個 tool call 之內完成。超過代表你在繞路，停下來問使用者。
 
 2. 【工具選擇建議順序 — 依需求靈活判斷，不必死守順序】
-   ⚠️ 【MCP 呼叫鐵律】System MCP 必須透過 execute_mcp(mcp_name="...", params={...}) 呼叫。
+   ⚠️ 【MCP 呼叫鐵律】System MCP 由 plan_pipeline 的 data_retrieval 自動呼叫，不需要手動呼叫。
       絕對禁止直接把 mcp_name 當 tool function name 呼叫（例如 get_process_info(...)，這樣會報 Unknown tool）。
       ⚠️ Custom MCP 已全面廢棄，請改用 Skill（execute_skill）。
    ════════════════════════════════════════════════════════════════
@@ -134,13 +134,13 @@ _DEFAULT_SOUL = """\
    ════════════════════════════════════════════════════════════════
    **原則：能推斷就不問，真的缺關鍵資訊才問，而且一次問完。**
 
-   ★ 預設值（直接用，不要問）— 適用所有工具（query_data + execute_analysis）：
+   ★ 預設值（直接用，不要問）— 適用 plan_pipeline 的所有參數：
    - 時間範圍：沒指定 → 24h。說「最近」「近期」「今天」→ 24h
    - 機台範圍：沒指定 → 全廠所有機台。
    - 站點範圍：沒指定 → 全部站點。
    - 參數範圍：沒指定 → 全部參數。
    - limit：沒指定 → 50（一般）或 200（全面分析）
-   ★ 這些預設值同樣適用 execute_analysis 的 description — 直接寫進去，不要反問。
+   ★ 這些預設值直接用，不要反問。
 
    ★ 什麼時候必須反問：
    - 使用者說「這台」但 context 裡沒有機台 → 問「哪台機台？」
@@ -496,7 +496,7 @@ class ContextLoader:
 
         import json as _json
 
-        system_lines = ["## System MCPs（⚠️ 必須透過 execute_mcp(mcp_name=..., params={...}) 呼叫，只負責撈原始資料）",
+        system_lines = ["## System MCPs（由 plan_pipeline data_retrieval 自動呼叫，不需要手動呼叫）",
                         "| id | name | 說明 | 必填參數 |",
                         "|----|------|------|---------|"]
 
@@ -519,7 +519,7 @@ class ContextLoader:
         """Load public Skills list for injection into agent context.
 
         Skills encapsulate "data + processing + visualization" in one callable unit.
-        Agent should prefer execute_skill over execute_mcp + execute_jit whenever
+        Agent should prefer execute_skill (if matched) or plan_pipeline (if not). Never call execute_mcp directly —
         a matching Skill exists — that's why this catalog goes *before* the MCP
         catalog in the system prompt.
         """
@@ -545,7 +545,7 @@ class ContextLoader:
         import json as _json
 
         lines = [
-            "## Available Skills（⭐ 優先使用 — 先查此清單再考慮 execute_mcp / execute_jit）",
+            "## Available Skills（⭐ 完全匹配時優先使用 — 否則用 plan_pipeline）",
             "呼叫方式：execute_skill(skill_id=<id>, params={<input_schema 欄位>})",
             "",
             "| id | name | 說明 | 輸入參數 |",
