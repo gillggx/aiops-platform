@@ -269,23 +269,29 @@ async def _run_transform(
         f"- Input: _flat_data (dict, 每個 key 是 dataset name, value 是 list of dicts)\n"
         f"- Output: 把結果 assign 到 _processed_data (list of dicts)\n"
         f"- 只用 Python 標準庫 + numpy\n"
-        f"- 不要 import requests/os/sys/matplotlib/plotly\n"
-        f"- 不要呼叫 execute_mcp\n\n"
-        f"只輸出 Python code，不要解釋。"
+        f"- 禁止 import anthropic/openai/requests/os/sys/matplotlib/plotly\n"
+        f"- 禁止呼叫 API 或 execute_mcp\n\n"
+        f"只輸出 Python code，不要解釋，不要 markdown。"
     )
 
     llm = get_llm_client()
     resp = await llm.create(
-        system="你是 Python code generator。只輸出可執行的 Python code，不要 markdown。",
+        system="你是 Python code generator。只輸出可直接執行的純 Python code。禁止呼叫 API。",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2048,
     )
     code = (resp.text or "").strip()
-    # Strip markdown fences
     if code.startswith("```"):
         code = "\n".join(code.split("\n")[1:])
     if code.endswith("```"):
         code = "\n".join(code.split("\n")[:-1])
+
+    # Validate
+    _BANNED = ["anthropic", "openai", "requests", "subprocess", "os.system"]
+    for banned in _BANNED:
+        if f"import {banned}" in code or f"from {banned}" in code:
+            logger.warning("Transform code contains banned import '%s', rejecting", banned)
+            return None, f"# REJECTED: contains banned import '{banned}'"
 
     # Execute in sandbox
     namespace = {"_flat_data": flat_data, "_processed_data": None, "true": True, "false": False, "null": None}
@@ -327,20 +333,34 @@ async def _run_compute(
                     data_desc += f"  {_json.dumps(compact, ensure_ascii=False, default=str)}\n"
 
     prompt = (
-        f"生成 Python code 來做統計計算。\n\n"
-        f"可用資料：\n{data_desc}\n"
-        f"需求：{description}\n\n"
-        f"規則：\n"
-        f"- Input: _flat_data (dict of datasets), _processed_data (list or None)\n"
-        f"- Output: 把結果 assign 到 _compute_results (list of dicts)\n"
-        f"- 可用：numpy, scipy.stats, collections, math\n"
-        f"- 不要 import requests/os/sys/matplotlib/plotly\n\n"
-        f"只輸出 Python code，不要解釋。"
+        f"生成純 Python 計算 code（不是 API 呼叫，不是對話，就是計算）。\n\n"
+        f"已有的變數（直接使用，不需要 import 或呼叫任何 API）：\n"
+        f"  _flat_data: dict，key 是 dataset name，value 是 list of dicts\n"
+        f"  _processed_data: list of dicts 或 None\n"
+        f"  np: numpy（已 import）\n\n"
+        f"可用資料範例：\n{data_desc}\n"
+        f"計算需求：{description}\n\n"
+        f"=== 嚴格規則 ===\n"
+        f"1. 把計算結果 assign 到 _compute_results (list of dicts)\n"
+        f"2. 只用 Python 標準庫 + numpy。可用 from collections import ... / import math\n"
+        f"3. 禁止 import anthropic / openai / requests / os / sys / matplotlib / plotly\n"
+        f"4. 禁止呼叫任何 API 或網路請求\n"
+        f"5. 直接從 _flat_data 或 _processed_data 讀取資料計算\n\n"
+        f"=== 範例 ===\n"
+        f"# OOC check 範例：\n"
+        f"results = []\n"
+        f"for chart_type in set(r['chart_type'] for r in _flat_data['spc_data']):\n"
+        f"    subset = [r for r in _flat_data['spc_data'] if r['chart_type'] == chart_type]\n"
+        f"    last_5 = subset[-5:]\n"
+        f"    ooc_count = sum(1 for r in last_5 if r.get('is_ooc'))\n"
+        f"    results.append({{'chart_type': chart_type, 'last_5_ooc': ooc_count, 'alert': ooc_count >= 2}})\n"
+        f"_compute_results = results\n\n"
+        f"只輸出 Python code，不要解釋，不要 markdown。"
     )
 
     llm = get_llm_client()
     resp = await llm.create(
-        system="你是 Python code generator。只輸出可執行的 Python code，不要 markdown。",
+        system="你是 Python code generator。只輸出可直接執行的純 Python 計算 code。禁止呼叫 API。",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2048,
     )
@@ -349,6 +369,13 @@ async def _run_compute(
         code = "\n".join(code.split("\n")[1:])
     if code.endswith("```"):
         code = "\n".join(code.split("\n")[:-1])
+
+    # Validate: reject dangerous imports
+    _BANNED = ["anthropic", "openai", "requests", "subprocess", "os.system", "urllib"]
+    for banned in _BANNED:
+        if f"import {banned}" in code or f"from {banned}" in code:
+            logger.warning("Compute code contains banned import '%s', rejecting", banned)
+            return None, f"# REJECTED: contains banned import '{banned}'"
 
     namespace = {
         "_flat_data": flat_data,
