@@ -3,8 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Group, Panel, Separator } from "react-resizable-panels";
-// v4 API requires Panel ids + defaultLayout map
+// Resizable panel via native CSS resize
 import { Topbar } from "@/components/layout/Topbar";
 import { AICopilot } from "@/components/copilot/AICopilot";
 import { AnalysisPanel } from "@/components/layout/AnalysisPanel";
@@ -166,48 +165,38 @@ function Shell({ children }: { children: React.ReactNode }) {
       <Topbar />
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <ContextualSidebar />
-        <Group
-          orientation="horizontal"
-          style={{ flex: 1 }}
-          defaultLayout={{ main: 70, copilot: 30 }}
-        >
-          <Panel id="main" minSize={40}>
-            <main style={{ height: "100%", overflowY: "auto", minWidth: 0 }}>
-              {dataExplorer ? (
-                <DataExplorerPanel
-                  state={dataExplorer}
-                  onClose={() => setDataExplorer(null)}
-                />
-              ) : investigateMode && contract ? (
-                <AnalysisPanel
-                  contract={contract}
-                  onClose={() => { setInvestigateMode(false); setContract(null); }}
-                  onAgentMessage={(msg) => setTriggerMessage(msg)}
-                  onHandoff={handleHandoff}
-                />
-              ) : children}
-            </main>
-          </Panel>
-          <Separator style={{
-            width: 4, background: "#e2e8f0", cursor: "col-resize",
-            transition: "background 0.15s",
-          }} />
-          <Panel id="copilot" minSize={20} maxSize={50}>
-            <div style={{
-              height: "100%", display: "flex", flexDirection: "column",
-              background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflow: "hidden",
-            }}>
-              <AICopilot
-                onContract={handleContract}
-                onDataExplorer={handleDataExplorer}
-                triggerMessage={triggerMessage}
-                onTriggerConsumed={() => setTriggerMessage(null)}
-                contextEquipment={selectedEquipment?.name ?? null}
-                onHandoff={handleHandoff}
-              />
-            </div>
-          </Panel>
-        </Group>
+        <main style={{ flex: 1, overflowY: "auto", minWidth: 0 }}>
+          {dataExplorer ? (
+            <DataExplorerPanel
+              state={dataExplorer}
+              onClose={() => setDataExplorer(null)}
+            />
+          ) : investigateMode && contract ? (
+            <AnalysisPanel
+              contract={contract}
+              onClose={() => { setInvestigateMode(false); setContract(null); }}
+              onAgentMessage={(msg) => setTriggerMessage(msg)}
+              onHandoff={handleHandoff}
+            />
+          ) : children}
+        </main>
+        <aside style={{
+          width: 380, minWidth: 280, maxWidth: "50vw", flexShrink: 0,
+          display: "flex", flexDirection: "column",
+          background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflow: "hidden",
+          resize: "horizontal", direction: "rtl",
+        }}>
+          <div style={{ direction: "ltr", display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+            <AICopilot
+              onContract={handleContract}
+              onDataExplorer={handleDataExplorer}
+              triggerMessage={triggerMessage}
+              onTriggerConsumed={() => setTriggerMessage(null)}
+              contextEquipment={selectedEquipment?.name ?? null}
+              onHandoff={handleHandoff}
+            />
+          </div>
+        </aside>
       </div>
     </div>
   );
