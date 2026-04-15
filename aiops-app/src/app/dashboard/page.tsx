@@ -46,8 +46,8 @@ const STATUS_COLOR: Record<string, string> = {
 const S = {
   page: { display: "flex", height: "100vh", background: "#f7f8fc", overflow: "hidden" } as React.CSSProperties,
   sidebar: (collapsed: boolean): React.CSSProperties => ({
-    width: collapsed ? 48 : 260,
-    minWidth: collapsed ? 48 : 260,
+    width: collapsed ? 48 : 220,
+    minWidth: collapsed ? 48 : 220,
     background: "#f8f9fa",
     color: "#2d3748",
     display: "flex",

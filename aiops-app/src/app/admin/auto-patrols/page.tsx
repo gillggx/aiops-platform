@@ -105,7 +105,7 @@ const S = {
   }),
   btnSm: (c: string): React.CSSProperties => ({
     padding: "4px 10px", borderRadius: 5, border: "none", cursor: "pointer",
-    fontSize: 12, fontWeight: 500, background: c, color: "#fff",
+    fontSize: 12, fontWeight: 500, background: c, color: "#fff", whiteSpace: "nowrap",
   }),
   label: { display: "block", fontSize: 12, fontWeight: 600, color: "#4a5568", marginBottom: 4 } as React.CSSProperties,
   input: {
@@ -623,15 +623,16 @@ export default function AutoPatrolsPage() {
       </div>
 
       {/* List */}
-      <table style={S.table}>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ ...S.table, minWidth: 800 }}>
         <thead>
           <tr>
             <th style={S.th}>名稱</th>
             <th style={S.th}>觸發方式</th>
             <th style={S.th}>近 24h 執行</th>
             <th style={S.th}>警報</th>
-            <th style={S.th}>狀態</th>
-            <th style={S.th}>操作</th>
+            <th style={{ ...S.th, width: 60 }}>狀態</th>
+            <th style={{ ...S.th, width: 180 }}>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -720,15 +721,18 @@ export default function AutoPatrolsPage() {
                 </span>
               </td>
               <td style={S.td}>
-                <button style={{ ...S.btnSm("#dd6b20"), marginRight: 6 }} onClick={() => handleTrigger(p.id)}>執行</button>
-                <button style={{ ...S.btnSm("#3182ce"), marginRight: 6 }} onClick={() => openEdit(p)}>編輯</button>
-                <button style={{ ...S.btnSm("#6366f1"), marginRight: 6 }} onClick={() => openHistory(p)}>紀錄</button>
-                <button style={S.btnSm("#e53e3e")} onClick={() => handleDelete(p.id)}>刪除</button>
+                <div style={{ display: "flex", gap: 4, flexWrap: "nowrap" }}>
+                  <button style={S.btnSm("#dd6b20")} onClick={() => handleTrigger(p.id)}>執行</button>
+                  <button style={S.btnSm("#3182ce")} onClick={() => openEdit(p)}>編輯</button>
+                  <button style={S.btnSm("#6366f1")} onClick={() => openHistory(p)}>紀錄</button>
+                  <button style={S.btnSm("#e53e3e")} onClick={() => handleDelete(p.id)}>刪除</button>
+                </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
 
       {/* ── Modal (single-page form) ── */}
       {showModal && (

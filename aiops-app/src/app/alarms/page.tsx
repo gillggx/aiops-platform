@@ -221,7 +221,7 @@ export default function AlarmCenterPage() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
         {/* Master (35%) — Alarm List */}
-        <div style={{ width: "35%", minWidth: 300, background: "#fff", borderRight: "1px solid #e0e0e0", overflowY: "auto" }}>
+        <div style={{ width: "28%", minWidth: 240, maxWidth: 420, background: "#fff", borderRight: "1px solid #e0e0e0", overflowY: "auto" }}>
           {loading && <div style={{ padding: 16, color: "#a0aec0", fontSize: 13 }}>載入中...</div>}
           {alarms.map(a => (
             <div key={a.id} onClick={() => setSelectedId(a.id)} style={{

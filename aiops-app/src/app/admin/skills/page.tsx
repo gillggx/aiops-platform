@@ -80,7 +80,7 @@ const S = {
   }),
   btnSm: (color: string): React.CSSProperties => ({
     padding: "4px 10px", borderRadius: 5, border: "none", cursor: "pointer",
-    fontSize: 12, fontWeight: 500, background: color, color: "#fff",
+    fontSize: 12, fontWeight: 500, background: color, color: "#fff", whiteSpace: "nowrap",
   }),
   table: { width: "100%", borderCollapse: "collapse" as const, fontSize: 13 },
   th: {
@@ -550,15 +550,16 @@ export default function DiagnosticRulesPage() {
       </div>
 
       {/* Table */}
-      <table style={S.table}>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ ...S.table, minWidth: 700 }}>
         <thead>
           <tr>
             <th style={S.th}>名稱</th>
             <th style={S.th}>自動檢查描述</th>
-            <th style={S.th}>步驟數</th>
+            <th style={{ ...S.th, width: 60 }}>步驟數</th>
             <th style={S.th}>觸發來源</th>
-            <th style={S.th}>狀態</th>
-            <th style={S.th}>操作</th>
+            <th style={{ ...S.th, width: 60 }}>狀態</th>
+            <th style={{ ...S.th, width: 120 }}>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -612,17 +613,16 @@ export default function DiagnosticRulesPage() {
                 </span>
               </td>
               <td style={S.td}>
-                <button style={{ ...S.btnSm("#4a5568"), marginRight: 6 }} onClick={() => openEdit(rule)}>
-                  編輯
-                </button>
-                <button style={S.btnSm("#e53e3e")} onClick={() => handleDelete(rule.id)}>
-                  刪除
-                </button>
+                <div style={{ display: "flex", gap: 4, flexWrap: "nowrap" }}>
+                  <button style={S.btnSm("#4a5568")} onClick={() => openEdit(rule)}>編輯</button>
+                  <button style={S.btnSm("#e53e3e")} onClick={() => handleDelete(rule.id)}>刪除</button>
+                </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
 
       {/* Modal */}
       {showModal && (
