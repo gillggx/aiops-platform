@@ -179,10 +179,10 @@ export default function AlarmCenterPage() {
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
           {Object.entries(stats.severities).map(([sev, count]) => (
             <span key={sev} style={{
-              padding: "4px 12px", borderRadius: 16, fontWeight: 700, fontSize: 13,
-              background: sev === "HIGH" || sev === "CRITICAL" ? "#fff1f0" : "#fffbe6",
+              padding: "4px 12px", borderRadius: 16, fontWeight: 600, fontSize: 12,
+              background: "#f7f8fc",
               color: SEV_COLOR[sev] ?? "#666",
-              border: `1px solid ${sev === "HIGH" || sev === "CRITICAL" ? "#ffa39e" : "#ffe58f"}`,
+              border: `1px solid #e2e8f0`,
             }}>
               {sev}: {count}
             </span>
@@ -308,10 +308,10 @@ function AlarmDetail({ alarm }: { alarm: Alarm }) {
         {alarm.title} • {timeAgo(alarm.created_at)}
       </p>
 
-      {/* AI Synthesis */}
+      {/* AI Synthesis — clean style */}
       <div style={{
-        background: "linear-gradient(to right, #f0f7ff, #ffffff)",
-        border: "1px solid #91d5ff", borderLeft: "4px solid #1890ff",
+        background: "#fff",
+        border: "1px solid #e2e8f0", borderLeft: "4px solid #4299e1",
         borderRadius: 8, padding: "16px 20px", marginBottom: 16,
       }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#595959", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
@@ -350,10 +350,11 @@ function AlarmDetail({ alarm }: { alarm: Alarm }) {
           {alarm.findings ? (
             <div>
               <div style={{
-                background: alarm.findings.condition_met ? "#fff1f0" : "#f6ffed",
+                background: "#fff",
                 padding: 12, borderRadius: 4, marginBottom: 12,
-                color: alarm.findings.condition_met ? "#f5222d" : "#52c41a",
-                border: `1px solid ${alarm.findings.condition_met ? "#ffa39e" : "#b7eb8f"}`,
+                color: "#2d3748",
+                border: "1px solid #e2e8f0",
+                borderLeft: `4px solid ${alarm.findings.condition_met ? "#e53e3e" : "#48bb78"}`,
                 fontSize: 13,
               }}>
                 {alarm.findings.summary || (alarm.findings.condition_met ? "條件達成" : "條件未達成")}
@@ -400,7 +401,8 @@ function DRAccordion({ dr, index, total }: { dr: DiagnosticResult; index: number
         padding: 16, cursor: "pointer",
         display: "flex", justifyContent: "space-between", alignItems: "center",
         fontWeight: 600, fontSize: 14, transition: "background 0.15s",
-        background: isAlert ? "#fff1f0" : "#fafafa",
+        background: "#fafafa",
+        borderLeft: isAlert ? "4px solid #e53e3e" : "4px solid #48bb78",
         borderBottom: open ? "1px solid #e0e0e0" : "none",
       }}>
         <span>DR {index + 1}/{total}：{dr.skill_name || `Rule #${dr.skill_id}`}</span>

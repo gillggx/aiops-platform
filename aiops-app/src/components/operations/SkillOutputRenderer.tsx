@@ -525,16 +525,17 @@ export function RenderMiddleware({
 
   return (
     <div style={{ fontSize: 13 }}>
-      {/* Condition banner */}
+      {/* Condition banner — subdued colors */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8,
         padding: "8px 12px", borderRadius: 6, marginBottom: 10,
-        background: findings.condition_met ? "#fff5f5" : "#f0fff4",
-        border: `1px solid ${findings.condition_met ? "#feb2b2" : "#9ae6b4"}`,
+        background: "#fff",
+        border: "1px solid #e2e8f0",
+        borderLeft: `4px solid ${findings.condition_met ? "#e53e3e" : "#48bb78"}`,
       }}>
         <span style={{ fontSize: 14 }}>{findings.condition_met ? "🔴" : "🟢"}</span>
         <div>
-          <span style={{ fontWeight: 600, color: findings.condition_met ? "#c53030" : "#276749" }}>
+          <span style={{ fontWeight: 600, color: "#2d3748" }}>
             {findings.condition_met ? "條件達成 — 將觸發警報" : "條件未達成 — 不觸發警報"}
           </span>
           {findings.summary && (

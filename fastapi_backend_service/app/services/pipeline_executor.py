@@ -88,6 +88,23 @@ async def execute_pipeline(
         })
         return _build_result(pipeline_cards, llm_summary=f"資料擷取失敗: {exc}")
 
+    # ── Short-circuit for non-events MCPs (summary, list_tools, status) ────
+    # These return aggregated data, not events. Skip flatten + compute + presentation.
+    _NON_EVENT_MCPS = {"get_process_summary", "list_tools", "get_simulation_status"}
+    if mcp_name in _NON_EVENT_MCPS:
+        import json as _json
+        raw_text = _json.dumps(raw_result, ensure_ascii=False, default=str)[:6000]
+        for s in [4, 5, 6]:
+            pipeline_cards.append({
+                "stage": s, "name": ["", "", "", "", "Data Transform", "Compute", "Presentation"][s],
+                "icon": ["", "", "", "", "🔄", "🔬", "📊"][s],
+                "status": "skipped", "elapsed": 0, "summary": "N/A (non-events MCP)",
+            })
+        return _build_result(
+            pipeline_cards, flat_data=None, flat_metadata=None,
+            llm_summary=raw_text,
+        )
+
     # ── Stage 4: Data Transform ──────────────────────────────────────────────
 
     t0 = time.time()

@@ -7,6 +7,7 @@ import { consumeSSE } from "@/lib/sse";
 import { ContractCard } from "./ContractCard";
 import { ChartIntentRenderer, type ChartIntent } from "./ChartIntentRenderer";
 import { ChartExplorer } from "./ChartExplorer";
+import { PipelineConsole, type PipelineCard } from "./PipelineConsole";
 import type { UiRender } from "@/components/McpChartRenderer";
 import type { FlatDataMetadata, UIConfig } from "@/context/FlatDataContext";
 import ReactMarkdown from "react-markdown";
@@ -262,6 +263,8 @@ export function AICopilot({
   const chatEndRef   = useRef<HTMLDivElement>(null);
   const logsEndRef   = useRef<HTMLDivElement>(null);
   const pendingRenderDecisionRef = useRef<RenderDecisionMeta | null>(null);
+  const [pipelineCards, setPipelineCards] = useState<PipelineCard[]>([]);
+  const [pipelineStats, setPipelineStats] = useState<{ llmCalls: number; totalTokens: number }>({ llmCalls: 0, totalTokens: 0 });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pendingFlatDataRef = useRef<{ flatData: Record<string, any[]>; metadata: FlatDataMetadata; uiConfig: UIConfig | null; queryInfo?: any } | null>(null);
 
@@ -306,6 +309,8 @@ export function AICopilot({
     setLoading(true);
     setStages([]);
     setLogs([]);
+    setPipelineCards([]);
+    setPipelineStats({ llmCalls: 0, totalTokens: 0 });
     setHitl(null);
     setTokenIn(0);
     setTokenOut(0);
@@ -351,12 +356,20 @@ export function AICopilot({
 
           case "context_load": {
             const ragHits = (ev.rag_hits as Array<{ id: number; content: string }>) ?? [];
-            addLog(makeLog("📦", `CTX | RAG 記憶: ${ev.rag_count ?? 0} 條 | 歷史: ${ev.history_turns ?? 0} 輪`, "info"));
+            const ragCount = (ev.rag_count as number) ?? 0;
+            const histTurns = (ev.history_turns as number) ?? 0;
+            addLog(makeLog("📦", `CTX | RAG 記憶: ${ragCount} 條 | 歷史: ${histTurns} 輪`, "info"));
             if (ragHits.length > 0) {
               ragHits.slice(0, 5).forEach((m) => {
                 addLog(makeLog("🧠", `[記憶 #${m.id}] ${m.content.slice(0, 80)}${m.content.length > 80 ? "…" : ""}`, "info"));
               });
             }
+            // Pipeline card
+            setPipelineCards((prev) => [...prev.filter(c => c.stage !== 1), {
+              stage: 1, name: "Context Load", icon: "📦", status: "complete",
+              summary: `RAG: ${ragCount} 條 | History: ${histTurns} 輪`,
+              detail: { rag_count: ragCount, history_turns: histTurns },
+            }]);
             break;
           }
 
@@ -369,6 +382,7 @@ export function AICopilot({
             const outTok = (ev.output_tokens as number) ?? 0;
             setTokenIn((p)  => p + inTok);
             setTokenOut((p) => p + outTok);
+            setPipelineStats((p) => ({ llmCalls: p.llmCalls + 1, totalTokens: p.totalTokens + inTok + outTok }));
             addLog(makeLog("🔢", `LLM #${ev.iteration ?? "?"} in=${inTok} out=${outTok}`, "token"));
             break;
           }
@@ -377,6 +391,12 @@ export function AICopilot({
             const planText = (ev.text as string) ?? "";
             if (planText) {
               addLog(makeLog("📋", `Plan: ${planText.slice(0, 200)}`, "info"));
+              // Pipeline card
+              setPipelineCards((prev) => [...prev.filter(c => c.stage !== 2), {
+                stage: 2, name: "Planning", icon: "🧠", status: "complete",
+                summary: planText.slice(0, 100),
+                detail: { plan: planText },
+              }]);
             }
             break;
           }
@@ -478,12 +498,31 @@ export function AICopilot({
             if (status !== "skipped") {
               addLog(makeLog(icon, `${name} ${statusIcon} ${elapsed}s — ${summary}`, status === "error" ? "error" : "tool"));
             }
+
+            // Collect pipeline card for PipelineConsole
+            const pipelineStatus = status === "complete" ? "complete" : status === "error" ? "error" : status === "skipped" ? "skipped" : "running";
+            setPipelineCards((prev) => {
+              const idx = prev.findIndex((c) => c.stage === stageNum);
+              const card: PipelineCard = {
+                stage: stageNum, name, icon, summary, elapsed,
+                status: pipelineStatus as PipelineCard["status"],
+                detail: ev.detail as Record<string, unknown> | undefined,
+              };
+              if (idx >= 0) {
+                const u = [...prev]; u[idx] = card; return u;
+              }
+              return [...prev, card];
+            });
             break;
           }
 
           case "memory_write": {
             const content = (ev.fix_rule ?? ev.content ?? "") as string;
             addLog(makeLog("💡", `[${ev.memory_type ?? ev.source ?? "mem"}] ${content.slice(0, 100)}`, "memory"));
+            setPipelineCards((prev) => [...prev.filter(c => c.stage !== 9), {
+              stage: 9, name: "Memory", icon: "💡", status: "complete",
+              summary: content.slice(0, 60),
+            }]);
             break;
           }
 
@@ -534,17 +573,24 @@ export function AICopilot({
               }
             }
             addLog(makeLog("💬", `Synthesis 完成 (${text.length} chars)`, "info"));
+            setPipelineCards((prev) => [...prev.filter(c => c.stage !== 7), {
+              stage: 7, name: "Synthesis", icon: "💬", status: "complete",
+              summary: `${text.length} chars`,
+            }]);
             break;
           }
 
           case "reflection_running":
             setReflection({ status: "running", amendment: "" });
-            addLog(makeLog("🔍", "Stage 5 Self-Critique 驗證數值來源中…", "info"));
+            addLog(makeLog("🔍", "Self-Critique 驗證中…", "info"));
             break;
 
           case "reflection_pass":
             setReflection({ status: "pass", amendment: "" });
             addLog(makeLog("✅", "Self-Critique 通過 — 所有數值來源已確認", "info"));
+            setPipelineCards((prev) => [...prev.filter(c => c.stage !== 8), {
+              stage: 8, name: "Critique", icon: "🔍", status: "complete", summary: "PASS",
+            }]);
             break;
 
           case "reflection_amendment": {
@@ -830,20 +876,16 @@ export function AICopilot({
       {/* Console Tab */}
       {activeTab === "console" && (
         <div style={{
-          flex: 1, background: "#1a202c", margin: "8px",
+          flex: 1, background: "#fff", margin: "8px",
           borderRadius: 6, overflowY: "auto",
-          padding: "8px 10px", fontFamily: "monospace", fontSize: 11, minHeight: 0,
+          border: "1px solid #e2e8f0", minHeight: 0,
         }}>
-          {logs.length === 0 && (
-            <div style={{ color: "#2d3748", paddingTop: 8 }}>— Agent console —</div>
-          )}
-          {logs.map((entry) => (
-            <div key={entry.id} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
-              <span style={{ color: "#4a5568", flexShrink: 0 }}>{entry.ts}</span>
-              <span style={{ flexShrink: 0 }}>{entry.icon}</span>
-              <span style={{ color: LEVEL_COLOR[entry.level], wordBreak: "break-word" }}>{entry.text}</span>
-            </div>
-          ))}
+          <PipelineConsole
+            cards={pipelineCards.sort((a, b) => a.stage - b.stage)}
+            totalTime={pipelineCards.reduce((sum, c) => sum + (c.elapsed ?? 0), 0)}
+            llmCalls={pipelineStats.llmCalls}
+            totalTokens={pipelineStats.totalTokens}
+          />
           <div ref={logsEndRef} />
         </div>
       )}
