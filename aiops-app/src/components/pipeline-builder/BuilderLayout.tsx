@@ -388,7 +388,14 @@ function BuilderInner({ mode, pipelineId, initialKind, initialPipelineJson, sess
                   const ok = window.confirm("這個 session 未儲存，確定離開？");
                   if (!ok) return;
                 }
-                router.push("/dashboard");
+                // Phase 5-UX-6 fix: session page has a beforeunload guard +
+                // the SSE reader can prevent clean unmount; router.push silently
+                // no-ops. Use hard nav to force-leave. Pre-clear dirty flag so
+                // beforeunload doesn't pop the browser's native prompt too.
+                actions.markSaved();
+                setTimeout(() => {
+                  window.location.href = "/dashboard";
+                }, 0);
               }}
               title="回 Dashboard（session 內容留存，可從對話列表重開）"
               style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#4F46E5", padding: 0 }}
