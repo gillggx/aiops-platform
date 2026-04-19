@@ -4,7 +4,11 @@ __pycache__/
 *.pyo
 *.egg-info/
 dist/
-build/
+# NOTE: don't blanket-ignore `build/` — Next.js API route dirs can legitimately
+# be named "build" (e.g. /api/agent/build). We only want to ignore Python
+# package build outputs at the repo root.
+/build/
+/fastapi_backend_service/build/
 
 # ── Virtual environments ──────────────────────────────────────────────────────
 venv/
