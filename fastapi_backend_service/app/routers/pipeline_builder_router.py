@@ -24,7 +24,7 @@ import logging
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -596,11 +596,15 @@ async def fork_pipeline(
     return _pipeline_to_summary(forked) | {"pipeline_json": payload}
 
 
-@router.delete("/pipelines/{pipeline_id}", status_code=204)
+@router.delete(
+    "/pipelines/{pipeline_id}",
+    status_code=204,
+    response_class=Response,
+)
 async def delete_pipeline(
     pipeline_id: int,
     db: AsyncSession = Depends(get_db),
-) -> None:
+):
     """Hard-delete a pipeline. PR-B: only allowed for draft or archived
     (never validating/locked/active — must archive or go back to draft first)."""
     repo = PipelineRepository(db)
@@ -614,6 +618,7 @@ async def delete_pipeline(
         )
     await repo.delete(pipeline_id)
     await db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/pipelines/{pipeline_id}/deprecate")
@@ -835,11 +840,15 @@ async def list_auto_check_rules(
     return out
 
 
-@router.delete("/auto-check-rules/{trigger_id}", status_code=204)
+@router.delete(
+    "/auto-check-rules/{trigger_id}",
+    status_code=204,
+    response_class=Response,
+)
 async def delete_auto_check_rule(
     trigger_id: int,
     db: AsyncSession = Depends(get_db),
-) -> None:
+):
     from app.models.pipeline_auto_check_trigger import PipelineAutoCheckTriggerModel
     row = (await db.execute(
         select(PipelineAutoCheckTriggerModel).where(
@@ -850,6 +859,7 @@ async def delete_auto_check_rule(
         raise HTTPException(status_code=404, detail=f"Trigger {trigger_id} not found")
     await db.delete(row)
     await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/published-skills")
