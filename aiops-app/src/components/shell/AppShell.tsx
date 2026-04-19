@@ -20,7 +20,7 @@ const LiveCanvasOverlay = dynamic(
 );
 
 interface GlassEvent {
-  kind: "start" | "op" | "chat" | "error" | "done";
+  kind: "start" | "op" | "chat" | "error" | "done" | "user";
   sessionId?: string;
   goal?: string;
   op?: string;
@@ -275,12 +275,25 @@ function Shell({ children }: { children: React.ReactNode }) {
                 onTriggerConsumed={() => setTriggerMessage(null)}
                 contextEquipment={selectedEquipment?.name ?? null}
                 onHandoff={handleHandoff}
+                // Phase 5-UX-6: mirror every user message into the overlay
+                // event stream so the chat-style panel shows user bubbles.
+                onUserMessageSent={(text) => {
+                  pushGlassEvent({ kind: "user", content: text });
+                }}
                 // Phase 5-UX-6: Glass Box event wiring — chat agent streams
                 // its sub-agent's operations here; AppShell mounts the live
                 // canvas overlay so the user watches node-by-node build.
                 onGlassStart={(ev) => {
-                  glassEventsRef.current = [];
-                  setGlassEvents([]);
+                  // Keep any pending user bubbles already pushed; only drop
+                  // prior ops/starts from earlier rounds when a fresh build
+                  // starts from cold. For follow-up turns (overlay already
+                  // open), just append a new "start" event.
+                  if (!glassOverlay) {
+                    // Cold start — preserve latest user message if any
+                    const lastUser = [...glassEventsRef.current].reverse().find((e) => e.kind === "user");
+                    glassEventsRef.current = lastUser ? [lastUser] : [];
+                    setGlassEvents(glassEventsRef.current);
+                  }
                   setGlassOverlay({ sessionId: ev.session_id, goal: ev.goal, active: true });
                   pushGlassEvent({ kind: "start", sessionId: ev.session_id, goal: ev.goal });
                 }}
@@ -316,6 +329,14 @@ function Shell({ children }: { children: React.ReactNode }) {
           active={glassOverlay.active}
           events={glassEvents}
           onClose={() => setGlassOverlay(null)}
+          onSendMessage={(text) => {
+            // Push user bubble into the overlay's event stream + fire the
+            // main chat agent via AIAgentPanel's triggerMessage.
+            pushGlassEvent({ kind: "user", content: text });
+            setTriggerMessage(text);
+            // Mark overlay active again since a new build round is coming
+            setGlassOverlay((prev) => prev ? { ...prev, active: true } : null);
+          }}
         />
       )}
     </div>

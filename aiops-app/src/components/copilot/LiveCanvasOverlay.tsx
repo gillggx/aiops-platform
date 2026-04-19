@@ -28,7 +28,7 @@ const BuilderLayoutNoProvider = dynamic(
 );
 
 export interface GlassEvent {
-  kind: "start" | "op" | "chat" | "error" | "done";
+  kind: "start" | "op" | "chat" | "error" | "done" | "user";
   sessionId?: string;
   goal?: string;
   op?: string;
@@ -47,6 +47,10 @@ interface Props {
   active: boolean;
   events: GlassEvent[];
   onClose: () => void;
+  /** Phase 5-UX-6: send a follow-up message to the same chat session —
+   *  parent wires this to AIAgentPanel so overlay can continue the
+   *  conversation in-place (user's next "add histogram" etc.). */
+  onSendMessage?: (text: string) => void;
 }
 
 export default function LiveCanvasOverlay(props: Props) {
@@ -57,7 +61,7 @@ export default function LiveCanvasOverlay(props: Props) {
   );
 }
 
-function LiveCanvasInner({ sessionId, goal, active, events, onClose }: Props) {
+function LiveCanvasInner({ sessionId, goal, active, events, onClose, onSendMessage }: Props) {
   const { actions } = useBuilder();
   const [catalog, setCatalog] = useState<BlockSpec[]>([]);
   const [narration, setNarration] = useState<string>(goal ?? "");
@@ -134,26 +138,39 @@ function LiveCanvasInner({ sessionId, goal, active, events, onClose }: Props) {
           mode="session"
           sessionId={sessionId}
           fillViewport={false}
-          agentTabContent={<EventLogPanel events={events} active={active} />}
+          agentTabContent={
+            <GlassChatPanel events={events} active={active} onSendMessage={onSendMessage} />
+          }
         />
       </div>
     </div>
   );
 }
 
-/** Phase 5-UX-6: scrollable Glass Box event log — shows every chat narration +
- *  operation as it streams in, so users can follow the agent's reasoning. */
-function EventLogPanel({
+/** Phase 5-UX-6: chat-style Glass Box panel — mirrors AgentBuilderPanel's
+ *  look (user blue bubbles, agent light bubbles, op chips) + input at bottom
+ *  so the conversation stays continuous inside the overlay. */
+function GlassChatPanel({
   events,
   active,
+  onSendMessage,
 }: {
   events: GlassEvent[];
   active: boolean;
+  onSendMessage?: (text: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [input, setInput] = useState("");
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [events]);
+
+  const handleSend = () => {
+    const t = input.trim();
+    if (!t || !onSendMessage || active) return;
+    onSendMessage(t);
+    setInput("");
+  };
 
   return (
     <div
@@ -161,104 +178,196 @@ function EventLogPanel({
         flex: 1,
         display: "flex",
         flexDirection: "column",
-        background: "#0f172a",
-        color: "#e2e8f0",
+        background: "#fff",
         overflow: "hidden",
         minHeight: 0,
       }}
     >
-      {active && (
-        <div
-          style={{
-            padding: "6px 14px",
-            borderBottom: "1px solid #334155",
-            fontSize: 10,
-            color: "#94a3b8",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            flexShrink: 0,
-          }}
-        >
-          <span
-            style={{
-              width: 6, height: 6, borderRadius: "50%", background: "#38bdf8",
-              boxShadow: "0 0 8px #38bdf8",
-              animation: "pulse 1.2s ease-in-out infinite",
-            }}
-          />
-          <span>AI Agent 工作中</span>
-        </div>
-      )}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1, overflowY: "auto", padding: "12px 12px 0",
+          display: "flex", flexDirection: "column", gap: 8, minHeight: 0,
+        }}
+      >
         {events.length === 0 && (
-          <div style={{ color: "#64748b", textAlign: "center", marginTop: 20 }}>
+          <div style={{ color: "#94a3b8", fontSize: 12, textAlign: "center", paddingTop: 24 }}>
             等待 Agent 開始…
           </div>
         )}
         {events.map((e, i) => (
-          <EventLine key={i} event={e} />
+          <ChatLine key={i} event={e} />
         ))}
+        {active && (
+          <div style={{ fontSize: 11, color: "#94a3b8", padding: "4px 8px" }}>
+            ● ● ● 工作中…
+          </div>
+        )}
       </div>
-      <style>{`@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }`}</style>
+
+      {/* Follow-up input — user can keep iterating in the same session */}
+      <div style={{ padding: "8px 12px 12px", flexShrink: 0, borderTop: "1px solid #e2e8f0" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+            }}
+            placeholder={active ? "Agent 還在工作中…" : "告訴 Agent 繼續改進 pipeline…"}
+            disabled={!onSendMessage || active}
+            rows={2}
+            style={{
+              flex: 1,
+              background: "#f7f8fc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 8,
+              color: "#1a202c",
+              padding: "8px 10px",
+              fontSize: 13,
+              resize: "none",
+              outline: "none",
+              fontFamily: "inherit",
+              opacity: !onSendMessage || active ? 0.6 : 1,
+            }}
+          />
+          <button
+            onClick={handleSend}
+            disabled={!onSendMessage || active || !input.trim()}
+            style={{
+              background: !onSendMessage || active || !input.trim() ? "#e2e8f0" : "#2b6cb0",
+              color: !onSendMessage || active || !input.trim() ? "#a0aec0" : "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "8px 16px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: !onSendMessage || active || !input.trim() ? "not-allowed" : "pointer",
+              height: 52,
+            }}
+          >
+            送出
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function EventLine({ event }: { event: GlassEvent }) {
-  if (event.kind === "start") {
+function ChatLine({ event }: { event: GlassEvent }) {
+  // User message — blue bubble right-aligned
+  if (event.kind === "user" && event.content) {
     return (
-      <div style={{ padding: "6px 10px", background: "#1e293b", borderRadius: 4, color: "#7dd3fc", lineHeight: 1.5 }}>
-        <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 2 }}>🎯 目標</div>
-        <div>{event.goal || "—"}</div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "8px 12px",
+            borderRadius: "12px 12px 2px 12px",
+            fontSize: 13, background: "#2b6cb0", color: "#fff",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {event.content}
+        </div>
       </div>
     );
   }
+
+  // Agent narration — gray bubble left
   if (event.kind === "chat" && event.content) {
     return (
-      <div style={{ padding: "6px 10px", background: "#1e293b", borderRadius: 4, color: "#cbd5e1", lineHeight: 1.6 }}>
-        <span style={{ color: "#38bdf8", marginRight: 4 }}>💬</span>
-        {event.content}
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "9px 12px",
+            borderRadius: "12px 12px 12px 2px",
+            fontSize: 13, background: "#f7f8fc", color: "#1a202c",
+            border: "1px solid #e2e8f0", whiteSpace: "pre-wrap", lineHeight: 1.6,
+          }}
+        >
+          {event.content}
+        </div>
       </div>
     );
   }
+
+  // Goal (from pb_glass_start) — first-line, slightly highlighted
+  if (event.kind === "start" && event.goal) {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "6px 10px",
+            fontSize: 11, background: "#eef2ff", color: "#4338ca",
+            border: "1px solid #c7d2fe", borderRadius: 6,
+          }}
+        >
+          <span style={{ fontWeight: 600, marginRight: 4 }}>🎯 目標</span>
+          {event.goal}
+        </div>
+      </div>
+    );
+  }
+
+  // Operation — compact blue chip
   if (event.kind === "op" && event.op) {
     const meta = OP_LABELS[event.op] ?? event.op;
     const detail = opDetail(event.op, event.args ?? {});
     return (
-      <div
-        style={{
-          padding: "5px 10px",
-          background: "#0c1729",
-          borderLeft: "2px solid #38bdf8",
-          borderRadius: 2,
-          fontFamily: "ui-monospace, monospace",
-          color: "#94a3b8",
-        }}
-      >
-        <div style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 11 }}>
-          🛠 {meta}
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "6px 10px",
+            borderRadius: 6, fontSize: 11,
+            background: "#f0f9ff", color: "#0c4a6e",
+            border: "1px solid #bae6fd",
+            display: "flex", alignItems: "center", gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 12 }}>🛠</span>
+          <span style={{ fontWeight: 600 }}>{meta}</span>
+          {detail && <span style={{ color: "#475569" }}>{detail}</span>}
         </div>
-        {detail && (
-          <div style={{ fontSize: 10, marginTop: 2, wordBreak: "break-all" }}>{detail}</div>
-        )}
       </div>
     );
   }
+
+  // Error — red bubble
   if (event.kind === "error") {
     return (
-      <div style={{ padding: "6px 10px", background: "#7f1d1d", borderRadius: 4, color: "#fecaca" }}>
-        ⚠ {event.message}
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "8px 12px",
+            borderRadius: 6, fontSize: 12,
+            background: "#fef2f2", color: "#b91c1c",
+            border: "1px solid #fecaca",
+          }}
+        >
+          ⚠ {event.message}
+        </div>
       </div>
     );
   }
+
+  // Done — green bubble with summary
   if (event.kind === "done") {
     return (
-      <div style={{ padding: "8px 10px", background: "#166534", borderRadius: 4, color: "#dcfce7", fontWeight: 500 }}>
-        ✓ {event.summary || "完成"}
+      <div style={{ display: "flex", justifyContent: "flex-start" }}>
+        <div
+          style={{
+            maxWidth: "90%", padding: "8px 12px",
+            borderRadius: 6, fontSize: 12,
+            background: "#f0fdf4", color: "#166534",
+            border: "1px solid #bbf7d0", fontWeight: 500,
+          }}
+        >
+          ✓ {event.summary || "完成"}
+        </div>
       </div>
     );
   }
+
   return null;
 }
 

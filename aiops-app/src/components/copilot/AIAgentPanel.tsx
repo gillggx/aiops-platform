@@ -114,6 +114,9 @@ interface Props {
   onGlassChat?: (ev: { content: string }) => void;
   onGlassError?: (ev: { message: string; op?: string; hint?: string }) => void;
   onGlassDone?: (ev: { status: string; summary?: string; pipeline_json?: unknown }) => void;
+  // Phase 5-UX-6: fired whenever the user sends a message — host uses this to
+  // mirror the message into the live canvas overlay's chat panel.
+  onUserMessageSent?: (text: string) => void;
   // When provided, overrides the internal session id (used by /chat/[id] to pin
   // the panel to a specific conversation).
   sessionId?: string | null;
@@ -305,6 +308,7 @@ export function AIAgentPanel({
   onGlassChat,
   onGlassError,
   onGlassDone,
+  onUserMessageSent,
   initialPrompt,
 }: Props) {
   const [input, setInput]           = useState("");
@@ -409,6 +413,7 @@ export function AIAgentPanel({
     setActiveTab("chat");
 
     setChatHistory((prev) => [...prev, { id: nextId(), role: "user", content: message }]);
+    onUserMessageSent?.(message);
 
     try {
       const res = await fetch("/api/agent/chat", {
