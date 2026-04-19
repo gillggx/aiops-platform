@@ -129,7 +129,7 @@ function LiveCanvasInner({ sessionId, goal, active, events, onClose }: Props) {
       {/* Main body — canvas (left) + live event log (right) */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
         <div style={{ flex: 1, background: "#fff", overflow: "hidden", minWidth: 0 }}>
-          <BuilderLayoutNoProvider mode="session" sessionId={sessionId} />
+          <BuilderLayoutNoProvider mode="session" sessionId={sessionId} fillViewport={false} />
         </div>
         <EventLogPanel events={events} active={active} />
       </div>

@@ -64,6 +64,11 @@ interface Props {
   sessionId?: string;
   /** Phase 5-UX-3b: seed prompt auto-sent once when session mode mounts. */
   initialPrompt?: string;
+  /** Phase 5-UX-6: when false, BuilderInner uses position:relative + fills
+   *  parent instead of position:fixed covering the viewport. LiveCanvasOverlay
+   *  needs this so its own NarrationStrip + EventLogPanel don't get hidden
+   *  behind BuilderInner's fixed layer. Default true (existing callers). */
+  fillViewport?: boolean;
 }
 
 export default function BuilderLayout(props: Props) {
@@ -81,7 +86,7 @@ export function BuilderLayoutNoProvider(props: Props) {
   return <BuilderInner {...props} />;
 }
 
-function BuilderInner({ mode, pipelineId, initialKind, initialPipelineJson, sessionId, initialPrompt }: Props) {
+function BuilderInner({ mode, pipelineId, initialKind, initialPipelineJson, sessionId, initialPrompt, fillViewport = true }: Props) {
   const { state, actions, selectedNode, selectedEdge } = useBuilder();
   useBuilderKeybindings();
   const router = useRouter();
@@ -342,12 +347,11 @@ function BuilderInner({ mode, pipelineId, initialKind, initialPipelineJson, sess
       data-pb-theme={state.theme}
       data-pb-density={state.density}
       style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 100,
+        // Phase 5-UX-6: fillViewport=false (LiveCanvasOverlay) → fill parent
+        // instead of escaping the flow with fixed positioning.
+        ...(fillViewport
+          ? { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 }
+          : { position: "relative", width: "100%", height: "100%" }),
         display: "flex",
         flexDirection: "column",
         background: "var(--pb-canvas-bg)",
