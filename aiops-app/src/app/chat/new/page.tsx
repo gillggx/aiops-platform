@@ -8,10 +8,38 @@
  *   /chat/new?prompt=Hello   — pre-fills the first message
  */
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function NewChatPage() {
+  // Next.js 15 prod build requires useSearchParams() to live inside a
+  // Suspense boundary (SSG bailout rule).
+  return (
+    <Suspense fallback={<FallbackLoading />}>
+      <NewChatInner />
+    </Suspense>
+  );
+}
+
+function FallbackLoading() {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "system-ui, sans-serif",
+        color: "#718096",
+        fontSize: 13,
+      }}
+    >
+      建立新對話中…
+    </div>
+  );
+}
+
+function NewChatInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);

@@ -9,7 +9,7 @@
  */
 
 import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import type { PipelineJSON } from "@/lib/pipeline-builder/types";
 
@@ -26,6 +26,15 @@ interface SessionHydration {
 }
 
 export default function ChatSessionPage() {
+  // Next.js 15 requires useSearchParams() inside Suspense for SSG bailout.
+  return (
+    <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: "#718096" }}>載入對話中…</div>}>
+      <ChatSessionInner />
+    </Suspense>
+  );
+}
+
+function ChatSessionInner() {
   const params = useParams();
   const searchParams = useSearchParams();
   const sessionId = Array.isArray(params?.sessionId)
