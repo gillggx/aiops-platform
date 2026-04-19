@@ -607,37 +607,75 @@ export function AIAgentPanel({
             break;
           }
 
-          // Phase 5-UX-6: Glass Box events from build_pipeline_live sub-agent
+          // Phase 5-UX-6: Glass Box events from build_pipeline_live sub-agent.
+          // Fire host callbacks AND append to local chat history so the panel
+          // itself shows the agent's work (not just in the overlay).
           case "pb_glass_start": {
-            onGlassStart?.({ session_id: ev.session_id as string, goal: ev.goal as string | undefined });
+            const goal = ev.goal as string | undefined;
+            onGlassStart?.({ session_id: ev.session_id as string, goal });
+            setChatHistory((prev) => [...prev, {
+              id: nextId(), role: "agent",
+              content: goal ? `🛠️ **正在建立 pipeline**：${goal}` : "🛠️ 正在建立 pipeline…",
+            }]);
             break;
           }
           case "pb_glass_op": {
-            onGlassOp?.({
-              op: ev.op as string,
-              args: (ev.args as Record<string, unknown>) ?? {},
-              result: (ev.result as Record<string, unknown>) ?? {},
-            });
+            const op = ev.op as string;
+            const args = (ev.args as Record<string, unknown>) ?? {};
+            const result = (ev.result as Record<string, unknown>) ?? {};
+            onGlassOp?.({ op, args, result });
+            const OP_LABEL_MAP: Record<string, string> = {
+              add_node: "加入 node", remove_node: "刪除 node",
+              connect: "連邊", set_param: "設定參數",
+              rename_node: "重新命名", finish: "完成",
+              list_blocks: "查看 block 清單", preview: "預覽", validate: "驗證",
+            };
+            const label = OP_LABEL_MAP[op] ?? op;
+            let detail = "";
+            if (op === "add_node") detail = ` \`${args.block_name ?? ""}\``;
+            else if (op === "connect") detail = ` \`${args.from_node}.${args.from_port}\` → \`${args.to_node}.${args.to_port}\``;
+            else if (op === "remove_node") detail = ` \`${args.node_id}\``;
+            else if (op === "set_param") detail = ` \`${args.node_id}.${args.key}\``;
+            else if (op === "rename_node") detail = ` \`${args.node_id}\` → \`${args.display_label}\``;
+            setChatHistory((prev) => [...prev, {
+              id: nextId(), role: "agent",
+              content: `🛠 ${label}${detail}`,
+            }]);
             break;
           }
           case "pb_glass_chat": {
-            onGlassChat?.({ content: (ev.content as string) ?? "" });
+            const content = (ev.content as string) ?? "";
+            onGlassChat?.({ content });
+            if (content.trim()) {
+              setChatHistory((prev) => [...prev, {
+                id: nextId(), role: "agent", content: `💬 ${content}`,
+              }]);
+            }
             break;
           }
           case "pb_glass_error": {
+            const msg = (ev.message as string) ?? "";
             onGlassError?.({
-              message: (ev.message as string) ?? "",
+              message: msg,
               op: ev.op as string | undefined,
               hint: ev.hint as string | undefined,
             });
+            setChatHistory((prev) => [...prev, {
+              id: nextId(), role: "agent", content: `⚠️ ${msg}`,
+            }]);
             break;
           }
           case "pb_glass_done": {
+            const summary = ev.summary as string | undefined;
             onGlassDone?.({
               status: (ev.status as string) ?? "finished",
-              summary: ev.summary as string | undefined,
+              summary,
               pipeline_json: ev.pipeline_json,
             });
+            setChatHistory((prev) => [...prev, {
+              id: nextId(), role: "agent",
+              content: `✓ **${summary || "完成"}**`,
+            }]);
             break;
           }
 
