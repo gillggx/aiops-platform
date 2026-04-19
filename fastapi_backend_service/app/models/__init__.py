@@ -22,6 +22,12 @@ from app.models.cron_job import CronJobModel
 from app.models.execution_log import ExecutionLogModel
 from app.models.auto_patrol import AutoPatrolModel
 from app.models.nats_event_log import NatsEventLogModel
+from app.models.block import BlockModel
+from app.models.pipeline import PipelineModel
+from app.models.pipeline_run import PipelineRunModel
+from app.models.canvas_operation import CanvasOperationModel
+from app.models.pb_published_skill import PublishedSkillModel  # PR-C Phase 4-D registry
+from app.models.pipeline_auto_check_trigger import PipelineAutoCheckTriggerModel  # Phase 5-UX-7
 
 __all__ = [
     "UserModel",
@@ -46,4 +52,9 @@ __all__ = [
     "ExecutionLogModel",
     "AutoPatrolModel",
     "NatsEventLogModel",
+    "BlockModel",
+    "PipelineModel",
+    "PipelineRunModel",
+    "CanvasOperationModel",
+    "PublishedSkillModel",
 ]

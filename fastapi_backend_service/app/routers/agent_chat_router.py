@@ -116,3 +116,100 @@ async def delete_session(
     )
     await db.commit()
     return {"status": "success", "cleared": session_id}
+
+
+# ── Phase 5-UX-3b: session as first-class resource ─────────────────────────────
+
+@router.post("/session", summary="建立新 Agent session")
+async def create_session(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Create an empty Agent session. Used by /chat/new to issue a stable
+    session_id before the user types their first message."""
+    import uuid
+    new_sid = str(uuid.uuid4())
+    row = AgentSessionModel(
+        session_id=new_sid,
+        user_id=current_user.id,
+        messages="[]",
+        cumulative_tokens=0,
+    )
+    db.add(row)
+    await db.commit()
+    return {
+        "session_id": new_sid,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/session/{session_id}", summary="讀取 session（含對話歷史 + 最近 pipeline）")
+async def get_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Return session details for /chat/[id] page hydration.
+
+    Includes:
+      - messages: chronological [{role, content}]
+      - last_pipeline_json: canvas snapshot from last build_pipeline call (or null)
+      - last_pipeline_run_id: run id to look up result_summary
+    """
+    row = (await db.execute(
+        select(AgentSessionModel).where(
+            AgentSessionModel.session_id == session_id,
+            AgentSessionModel.user_id == current_user.id,
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    try:
+        messages = json.loads(row.messages or "[]")
+    except Exception:
+        messages = []
+    last_pipe = None
+    if row.last_pipeline_json:
+        try:
+            last_pipe = json.loads(row.last_pipeline_json)
+        except Exception:
+            last_pipe = None
+
+    return {
+        "session_id": row.session_id,
+        "title": row.title,
+        "messages": messages,
+        "cumulative_tokens": row.cumulative_tokens or 0,
+        "last_pipeline_json": last_pipe,
+        "last_pipeline_run_id": row.last_pipeline_run_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/sessions", summary="列出我的 sessions（近期優先）")
+async def list_sessions(
+    limit: int = 30,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> list[Dict[str, Any]]:
+    """Return recent sessions for the current user — for a 'My Chats' UI."""
+    rows = (await db.execute(
+        select(AgentSessionModel)
+        .where(AgentSessionModel.user_id == current_user.id)
+        .order_by(AgentSessionModel.updated_at.desc().nullslast(), AgentSessionModel.created_at.desc())
+        .limit(max(1, min(100, limit)))
+    )).scalars().all()
+
+    out = []
+    for r in rows:
+        out.append({
+            "session_id": r.session_id,
+            "title": r.title or "(untitled)",
+            "has_pipeline": bool(r.last_pipeline_json),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        })
+    return out

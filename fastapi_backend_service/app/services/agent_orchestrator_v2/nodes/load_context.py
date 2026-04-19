@@ -48,6 +48,62 @@ async def load_context_node(state: Dict[str, Any], config: RunnableConfig) -> Di
         b.get("text", "") for b in system_blocks if isinstance(b, dict)
     )
 
+    # Phase 5: pipeline-only directive + published-skill-first heuristic + block catalog.
+    try:
+        from app.config import get_settings
+        if get_settings().PIPELINE_ONLY_MODE:
+            # Inject pb block catalog so LLM knows the 26 blocks it can use in build_pipeline
+            try:
+                from app.services.pipeline_builder.block_registry import BlockRegistry
+                from app.services.pipeline_builder.prompt_hint import build_block_catalog_hint
+                _pb_reg = BlockRegistry()
+                await _pb_reg.load_from_db(db)
+                block_hint = build_block_catalog_hint(_pb_reg.catalog)
+            except Exception as e:  # noqa: BLE001
+                block_hint = f"(Could not load block catalog: {e})"
+
+            system_text += (
+                "\n\n# Pipeline-Only Mode (Phase 5-UX-6 — Glass Box build)\n"
+                "All data-analysis requests go through the Pipeline Builder engine.\n"
+                "\n"
+                "## Tool choice algorithm\n"
+                "1. **Knowledge-only** question (e.g. \"WECO R5 是什麼\")\n"
+                "     → Answer as plain text. No tool call.\n"
+                "2. **Data / analytical** question\n"
+                "     a. First call `search_published_skills(query=<user goal>)`.\n"
+                "     b. If a result matches well, call `invoke_published_skill(slug, inputs)`.\n"
+                "     c. **If no good match**: DO NOT immediately call `build_pipeline_live`.\n"
+                "        First tell the user in one short sentence: \"找不到現成 skill，要不要\n"
+                "        我幫你建一條？\"（或「沒有現成的分析可用，我可以用 Pipeline Builder\n"
+                "        建一條新的，要嗎？」）— 等使用者同意（\"好\" / \"可以\" / \"ok\"）再呼叫\n"
+                "        `build_pipeline_live(goal=\"...\")`. 這是強制的禮貌性確認，因為\n"
+                "        build_pipeline_live 會接管使用者畫面開 canvas overlay。\n"
+                "     d. 若使用者一開始就明確表達要「建 pipeline / 建新 skill」則可直接呼叫，\n"
+                "        不用再問一次。\n"
+                "\n"
+                "## build_pipeline_live notes\n"
+                "- **You do NOT emit pipeline_json**. Just pass `goal` as a clear NL brief. The\n"
+                "  sub-agent knows the block catalog, will list blocks it needs, add nodes,\n"
+                "  connect edges, set params, run the pipeline, and finish.\n"
+                "- After it returns, you'll get `{status, summary, node_count}`. Use this to\n"
+                "  write a short confirmation for the user. Do NOT repeat the full chart data —\n"
+                "  the canvas overlay already shows it visually.\n"
+                "- **Follow-up requests carry canvas forward automatically**. If the user asks to\n"
+                "  modify / add / remove something after a previous build (e.g. 「加一張常態分佈\n"
+                "  圖」、「把 step 改成 STEP_020」、「多加一條 regression」), just call\n"
+                "  `build_pipeline_live` again with the incremental goal. The sub-agent sees the\n"
+                "  existing canvas via session context and edits in place — you don't need to\n"
+                "  re-describe everything.\n"
+                "- If `base_pipeline_id` is relevant (user is editing a saved pipeline from\n"
+                "  /admin/pipeline-builder), pass it explicitly to override session context.\n"
+                "\n"
+                "## Block catalog (for reference; the sub-agent sees this too)\n"
+                + block_hint
+            )
+    except Exception as e:  # noqa: BLE001
+        import logging as _lg
+        _lg.getLogger(__name__).warning("Pipeline-only context injection failed: %s", e)
+
     # Extract retrieved experience memory IDs for feedback loop
     retrieved_memory_ids = [
         int(h["id"])

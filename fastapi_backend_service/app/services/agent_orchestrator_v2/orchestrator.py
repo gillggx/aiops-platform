@@ -60,7 +60,14 @@ class AgentOrchestratorV2:
 
         Same signature as AgentOrchestrator.run() so the router can
         switch between v1 and v2 without changing any calling code.
+
+        Phase 5-UX-5: an in-process event queue is attached to `configurable`
+        so tool_execute can push pipeline-builder lifecycle events from the
+        PipelineExecutor callback. A background relay task drains the queue
+        and yields the events alongside the graph's own SSE events, giving
+        the chat UI a live stream of `pb_structure` + `pb_node_start/done`.
         """
+        import asyncio as _asyncio
         graph = _get_compiled_graph()
 
         # Build initial state
@@ -72,6 +79,19 @@ class AgentOrchestratorV2:
             "canvas_overrides": self._canvas_overrides,
         }
 
+        # Phase 5-UX-5: event bus for tool → SSE progressive events.
+        # Callable is sync (executor is sync at the callsite), asyncio queue is
+        # thread-safe enough for same-loop puts.
+        _pb_queue: _asyncio.Queue = _asyncio.Queue()
+        _loop = _asyncio.get_running_loop()
+
+        def _pb_event_emit(event: Dict[str, Any]) -> None:
+            # Called from sync context inside tool_execute; schedule put onto loop.
+            try:
+                _loop.call_soon_threadsafe(_pb_queue.put_nowait, event)
+            except Exception:  # noqa: BLE001
+                pass
+
         # Config carries request-scoped dependencies (DB session, auth, etc.)
         # so nodes can access them without being coupled to FastAPI.
         config = {
@@ -81,6 +101,9 @@ class AgentOrchestratorV2:
                 "auth_token": self._auth_token,
                 "user_id": self._user_id,
                 "thread_id": session_id or "ephemeral",
+                # Phase 5-UX-5: callback into which tool_execute pushes
+                # pipeline-builder lifecycle events.
+                "pb_event_emit": _pb_event_emit,
             },
         }
 
@@ -97,7 +120,51 @@ class AgentOrchestratorV2:
                 version="v2",
             )
 
-            async for v1_event in adapt_events(event_stream, initial_state):
+            # Phase 5-UX-5: race the graph events with the pb event queue so
+            # per-node lifecycle events interleave with LLM events. Runs a
+            # background task that reads the graph stream into a second queue;
+            # then this coroutine drains both queues until the graph finishes.
+            _graph_queue: _asyncio.Queue = _asyncio.Queue()
+            _graph_done = _asyncio.Event()
+
+            async def _drain_graph():
+                try:
+                    async for v1_event in adapt_events(event_stream, initial_state):
+                        await _graph_queue.put(v1_event)
+                except Exception as exc:  # noqa: BLE001
+                    await _graph_queue.put({
+                        "type": "error", "message": f"v2 graph error: {exc}",
+                    })
+                finally:
+                    _graph_done.set()
+
+            _graph_task = _asyncio.create_task(_drain_graph())
+
+            while True:
+                graph_is_done = _graph_done.is_set() and _graph_queue.empty()
+                pb_is_empty = _pb_queue.empty()
+                if graph_is_done and pb_is_empty:
+                    break
+                # Prefer pb events when available (they're time-sensitive
+                # progress updates). Otherwise wait on graph with short timeout
+                # so new pb events still get flushed quickly.
+                if not pb_is_empty:
+                    v1_event = _pb_queue.get_nowait()
+                else:
+                    get_graph = _asyncio.create_task(_graph_queue.get())
+                    get_done  = _asyncio.create_task(_graph_done.wait())
+                    done, pending = await _asyncio.wait(
+                        {get_graph, get_done},
+                        return_when=_asyncio.FIRST_COMPLETED,
+                        timeout=0.1,
+                    )
+                    for p in pending:
+                        p.cancel()
+                    if get_graph in done:
+                        v1_event = get_graph.result()
+                    else:
+                        continue
+
                 # Track session_id + final_text + tokens for session save
                 if v1_event.get("type") == "context_load":
                     _final_session_id = v1_event.get("session_id") or _final_session_id

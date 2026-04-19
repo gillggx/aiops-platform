@@ -58,6 +58,10 @@ from app.routers import (
     auto_patrols_router,
     # v2.0 Diagnostic Rules
     diagnostic_rules_router,
+    # Phase 1 — Pipeline Builder (Glass Box)
+    pipeline_builder_router,
+    # Phase 3 — Agent Builder (Glass Box Agent via SSE)
+    agent_builder_router,
 )
 from app.routers.agent_chat_router import router as agent_chat_router
 from app.routers.agent_memory_router import router as agent_memory_router
@@ -1069,12 +1073,28 @@ _bg_tasks: list = []
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s v%s", settings.APP_NAME, settings.APP_VERSION)
+    # Keep a non-shadowed handle before 'import app.models' rebinds `app`
+    fastapi_app = app
     # Import all models so Base.metadata has them registered
     import app.models  # noqa: F401
     await init_db()
     logger.info("Database initialised")
     await _seed_data()
     logger.info("Startup seeding complete")
+    # Pipeline Builder (Phase 1): seed standard blocks + load registry into app.state
+    from app.services.pipeline_builder.seed import seed_phase1_blocks
+    from app.services.pipeline_builder.block_registry import BlockRegistry
+    try:
+        async for db in get_db():
+            await seed_phase1_blocks(db)
+            registry = BlockRegistry()
+            await registry.load_from_db(db)
+            fastapi_app.state.block_registry = registry
+            break
+        logger.info("Pipeline Builder registry ready (%d blocks)", len(registry.catalog))
+    except Exception as _pb_err:  # noqa: BLE001 — don't block lifespan on seed fail
+        logger.warning("Pipeline Builder seed/registry failed: %s", _pb_err)
+        fastapi_app.state.block_registry = BlockRegistry()
     # Phase 11: start the proactive inspection scheduler
     from app.scheduler import start_scheduler, stop_scheduler
     await start_scheduler(base_url=f"http://127.0.0.1:{getattr(settings, 'PORT', 8001)}")
@@ -1103,11 +1123,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("NATS subscriber skipped (no NATS server configured)")
     yield
-    _poller_task.cancel()
-    try:
-        await _poller_task
-    except asyncio.CancelledError:
-        pass
+    for _task in _bg_tasks:
+        _task.cancel()
+    for _task in _bg_tasks:
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — teardown must not crash
+            pass
     stop_nats_subscriber()
     cron_scheduler.shutdown(wait=False)
     stop_scheduler()
@@ -1188,6 +1212,10 @@ app.include_router(actions_router, prefix=_PREFIX)           # /api/v1/actions/.
 app.include_router(auto_patrols_router, prefix=_PREFIX)      # /api/v1/auto-patrols/...
 # v2.0 Diagnostic Rules
 app.include_router(diagnostic_rules_router, prefix=_PREFIX)  # /api/v1/diagnostic-rules/...
+# Phase 1 — Pipeline Builder (Glass Box)
+app.include_router(pipeline_builder_router, prefix=_PREFIX)  # /api/v1/pipeline-builder/...
+# Phase 3 — Agent Builder (Glass Box Agent via SSE)
+app.include_router(agent_builder_router, prefix=_PREFIX)  # /api/v1/agent/build/...
 # Phase 1: Reflective experience memory
 app.include_router(experience_memory_router, prefix=_PREFIX)  # /api/v1/experience-memory/...
 app.include_router(monitor_router, prefix=_PREFIX)            # /api/v1/system/monitor

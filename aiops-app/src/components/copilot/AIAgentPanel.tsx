@@ -8,6 +8,8 @@ import { ContractCard } from "./ContractCard";
 import { ChartIntentRenderer, type ChartIntent } from "./ChartIntentRenderer";
 import { ChartExplorer } from "./ChartExplorer";
 import { PipelineConsole, type PipelineCard } from "./PipelineConsole";
+import PbPipelineCard, { type PbPipelineCardData } from "./PbPipelineCard";
+import PbPatchProposalCard, { type PbPatchProposalData, type PipelinePatch } from "./PbPatchProposalCard";
 import type { UiRender } from "@/components/McpChartRenderer";
 import type { FlatDataMetadata, UIConfig } from "@/context/FlatDataContext";
 import ReactMarkdown from "react-markdown";
@@ -51,12 +53,14 @@ type RenderDecisionMeta = {
 
 interface ChatMessage {
   id: number;
-  role: "user" | "agent" | "mcp_result" | "chart_intents" | "chart_explorer";
+  role: "user" | "agent" | "mcp_result" | "chart_intents" | "chart_explorer" | "pb_pipeline" | "pb_proposal";
   content: string;
   contract?: AIOpsReportContract;
   mcpResult?: McpResult;
   chartIntents?: ChartIntent[];
   renderDecision?: RenderDecisionMeta;
+  pbPipeline?: PbPipelineCardData;
+  pbProposal?: PbPatchProposalData;
   // Generative UI
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   flatData?: Record<string, any[]>;
@@ -83,6 +87,44 @@ interface Props {
   onTriggerConsumed?: () => void;
   contextEquipment?: string | null;
   onHandoff?: (mcp: string, params?: Record<string, unknown>) => void;
+  // Phase 5-UX-3b: session-tab mode.
+  // "standalone" (default) — renders pb_pipeline card inline in chat (legacy behavior).
+  // "session"              — does NOT render inline card; fires onPipelineUpdate so
+  //                          the hosting BuilderLayout can update canvas + results.
+  mode?: "standalone" | "session";
+  // Phase 5-UX-5: fired during build_pipeline execution so a session-mode
+  // host can draw the DAG structure immediately (all nodes pending) and
+  // then light up each node as it finishes.
+  onPbStructure?: (pipelineJson: unknown) => void;
+  onPbNodeStart?: (evt: { node_id: string; block_id?: string; sequence?: number }) => void;
+  onPbNodeDone?: (evt: { node_id: string; status: string; rows?: number | null; duration_ms?: number; error?: string | null }) => void;
+  // Phase 5-UX-5 Copilot: when user clicks "套用到 Canvas" on a patch proposal
+  // the host (BuilderLayout) applies it via BuilderContext actions.
+  onApplyPatches?: (patches: PipelinePatch[]) => Promise<void> | void;
+  // Phase 5-UX-5: focus chip — user's next question is about this node/edge
+  // specifically. Set when user right-clicks a node or clicks "Ask about this".
+  focusedNodeId?: string | null;
+  focusedNodeLabel?: string | null;
+  onClearFocus?: () => void;
+  // Phase 5-UX-6: Glass Box event hooks. When chat agent calls build_pipeline_live,
+  // the backend relays sub-agent events as pb_glass_* SSE events. Host component
+  // consumes these to drive a live canvas overlay / session-embedded canvas.
+  onGlassStart?: (ev: { session_id: string; goal?: string }) => void;
+  onGlassOp?: (ev: { op: string; args: Record<string, unknown>; result: Record<string, unknown> }) => void;
+  onGlassChat?: (ev: { content: string }) => void;
+  onGlassError?: (ev: { message: string; op?: string; hint?: string }) => void;
+  onGlassDone?: (ev: { status: string; summary?: string; pipeline_json?: unknown }) => void;
+  // When provided, overrides the internal session id (used by /chat/[id] to pin
+  // the panel to a specific conversation).
+  sessionId?: string | null;
+  // Phase 5-UX-3b: session mode only — fired when Agent builds a pipeline so the
+  // host page can hydrate the canvas + results in place.
+  onPipelineUpdate?: (card: PbPipelineCardData) => void;
+  // Phase 5-UX-5: standalone mode — fired when user clicks "↗ 展開 canvas" on a
+  // pb_pipeline result card so the host shell can mount a full-page overlay.
+  onPbPipelineExpand?: (card: PbPipelineCardData) => void;
+  // Optional seed prompt; auto-sent once when the panel first mounts.
+  initialPrompt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,13 +282,30 @@ function RenderDecisionChips({ decision, onContract }: {
 // AICopilot
 // ---------------------------------------------------------------------------
 
-export function AICopilot({
+export function AIAgentPanel({
   onContract,
   onDataExplorer,
   triggerMessage,
   onTriggerConsumed,
   contextEquipment,
   onHandoff,
+  mode = "standalone",
+  sessionId: externalSessionId,
+  onPipelineUpdate,
+  onPbPipelineExpand,
+  onPbStructure,
+  onPbNodeStart,
+  onPbNodeDone,
+  onApplyPatches,
+  focusedNodeId,
+  focusedNodeLabel,
+  onClearFocus,
+  onGlassStart,
+  onGlassOp,
+  onGlassChat,
+  onGlassError,
+  onGlassDone,
+  initialPrompt,
 }: Props) {
   const [input, setInput]           = useState("");
   const [loading, setLoading]       = useState(false);
@@ -259,7 +318,14 @@ export function AICopilot({
   const [activeTab, setActiveTab]   = useState<"chat" | "console">("chat");
   const [reflection, setReflection] = useState<ReflectionState>({ status: null, amendment: "" });
 
-  const sessionIdRef = useRef<string | null>(null);
+  const sessionIdRef = useRef<string | null>(externalSessionId ?? null);
+  // When parent changes externalSessionId (e.g. /chat/[id] hydration finishes),
+  // keep the ref in sync so next chat POST targets the right conversation.
+  useEffect(() => {
+    if (externalSessionId !== undefined) {
+      sessionIdRef.current = externalSessionId;
+    }
+  }, [externalSessionId]);
   const chatEndRef   = useRef<HTMLDivElement>(null);
   const logsEndRef   = useRef<HTMLDivElement>(null);
   const pendingRenderDecisionRef = useRef<RenderDecisionMeta | null>(null);
@@ -291,6 +357,17 @@ export function AICopilot({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerMessage]);
 
+  // Phase 5-UX-3b: session mode — auto-send the seed prompt once when the
+  // panel first mounts (from /chat/new?prompt=... flow).
+  const initialPromptFiredRef = useRef(false);
+  useEffect(() => {
+    if (!initialPromptFiredRef.current && initialPrompt && externalSessionId) {
+      initialPromptFiredRef.current = true;
+      sendMessage(initialPrompt);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPrompt, externalSessionId]);
+
   const addLog = useCallback((entry: LogEntry) => {
     setLogs((prev) => [...prev.slice(-200), entry]);
   }, []);
@@ -312,6 +389,13 @@ export function AICopilot({
   const sendMessage = useCallback(async (message: string) => {
     if (!message.trim() || loading) return;
 
+    // Phase 5-UX-5: prepend focus context so LLM knows which node the
+    // user's question targets. Focus persists across turns until cleared.
+    const focusPrefix = focusedNodeId
+      ? `[Focused on ${focusedNodeLabel ?? focusedNodeId} (${focusedNodeId})]\n`
+      : "";
+    const messageToSend = focusPrefix + message;
+
     setLoading(true);
     setStages([]);
     setLogs([]);
@@ -330,7 +414,7 @@ export function AICopilot({
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, session_id: sessionIdRef.current }),
+        body: JSON.stringify({ message: messageToSend, session_id: sessionIdRef.current }),
       });
 
       if (!res.ok) {
@@ -450,6 +534,41 @@ export function AICopilot({
               if (rd) {
                 pendingRenderDecisionRef.current = rd;
               }
+            } else if (card?.type === "pb_patch_proposal") {
+              // Phase 5-UX-5 Copilot: agent proposes patches; render card with
+              // Apply/Reject in chat.
+              setChatHistory((prev) => [...prev, {
+                id: nextId(),
+                role: "pb_proposal",
+                content: "",
+                pbProposal: card as unknown as PbPatchProposalData,
+              }]);
+            } else if (card?.type === "pb_pipeline" || card?.type === "pb_pipeline_published") {
+              const pbCard = card as unknown as PbPipelineCardData;
+              if (mode === "session" && onPipelineUpdate) {
+                // Phase 5-UX-3b session mode: canvas lives in host — just notify
+                // + leave a compact chip in chat so the user sees what changed.
+                onPipelineUpdate(pbCard);
+                const nodeCount = pbCard.type === "pb_pipeline"
+                  ? (pbCard.pipeline_json?.nodes?.length ?? 0)
+                  : 0;
+                const chipText = pbCard.type === "pb_pipeline"
+                  ? `🛠️ Pipeline 已更新 · ${nodeCount} nodes · 已套用至畫布`
+                  : `📌 已執行已發佈 Skill: ${pbCard.skill_name ?? pbCard.slug ?? ""}`;
+                setChatHistory((prev) => [...prev, {
+                  id: nextId(),
+                  role: "agent",
+                  content: chipText,
+                }]);
+              } else {
+                // Standalone mode (main shell / Alarm Center): render full card inline.
+                setChatHistory((prev) => [...prev, {
+                  id: nextId(),
+                  role: "pb_pipeline",
+                  content: "",
+                  pbPipeline: pbCard,
+                }]);
+              }
             }
             // Charts now always go to the analysis panel (center) via contract.visualization.
             // No longer render chart_intents inline in copilot (right side).
@@ -487,6 +606,72 @@ export function AICopilot({
             }
             break;
           }
+
+          // Phase 5-UX-6: Glass Box events from build_pipeline_live sub-agent
+          case "pb_glass_start": {
+            onGlassStart?.({ session_id: ev.session_id as string, goal: ev.goal as string | undefined });
+            break;
+          }
+          case "pb_glass_op": {
+            onGlassOp?.({
+              op: ev.op as string,
+              args: (ev.args as Record<string, unknown>) ?? {},
+              result: (ev.result as Record<string, unknown>) ?? {},
+            });
+            break;
+          }
+          case "pb_glass_chat": {
+            onGlassChat?.({ content: (ev.content as string) ?? "" });
+            break;
+          }
+          case "pb_glass_error": {
+            onGlassError?.({
+              message: (ev.message as string) ?? "",
+              op: ev.op as string | undefined,
+              hint: ev.hint as string | undefined,
+            });
+            break;
+          }
+          case "pb_glass_done": {
+            onGlassDone?.({
+              status: (ev.status as string) ?? "finished",
+              summary: ev.summary as string | undefined,
+              pipeline_json: ev.pipeline_json,
+            });
+            break;
+          }
+
+          // Phase 5-UX-5: build_pipeline progressive events (legacy, kept
+          // for any clients still streaming them; build_pipeline itself retired)
+          case "pb_structure": {
+            onPbStructure?.(ev.pipeline_json);
+            break;
+          }
+          case "pb_node_start": {
+            onPbNodeStart?.({
+              node_id: ev.node_id as string,
+              block_id: ev.block_id as string | undefined,
+              sequence: ev.sequence as number | undefined,
+            });
+            addLog(makeLog("▶", `pb node start: ${ev.node_id}`, "tool"));
+            break;
+          }
+          case "pb_node_done": {
+            onPbNodeDone?.({
+              node_id: ev.node_id as string,
+              status: (ev.status as string) ?? "success",
+              rows: ev.rows as number | null | undefined,
+              duration_ms: ev.duration_ms as number | undefined,
+              error: ev.error as string | null | undefined,
+            });
+            const icon = ev.status === "success" ? "✅" : ev.status === "skipped" ? "⏭️" : "❌";
+            addLog(makeLog(icon, `pb node ${ev.node_id} ${ev.status} (${ev.rows ?? "—"} rows)`, "tool"));
+            break;
+          }
+          case "pb_run_start":
+          case "pb_run_done":
+            // quiet — covered by tool_start / tool_done already
+            break;
 
           case "pipeline_stage": {
             // 9-Stage Pipeline: each stage gets its own console log + stage dot
@@ -652,7 +837,7 @@ export function AICopilot({
     } finally {
       setLoading(false);
     }
-  }, [loading, onContract, addLog]);
+  }, [loading, onContract, addLog, focusedNodeId, focusedNodeLabel]);
 
   async function handleSuggestedAction(action: SuggestedAction) {
     if (isAgentAction(action)) {
@@ -713,7 +898,7 @@ export function AICopilot({
       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: "#1a202c" }}>AI Co-Pilot</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "#1a202c" }}>AI Agent</span>
             {contextEquipment && (
               <span style={{
                 fontSize: 11,
@@ -809,7 +994,18 @@ export function AICopilot({
                 alignItems: msg.role === "user" ? "flex-end" : "flex-start",
               }}
             >
-              {msg.role === "chart_explorer" && msg.flatData && msg.flatMetadata ? (
+              {msg.role === "pb_proposal" && msg.pbProposal ? (
+                <div style={{ width: "100%", maxWidth: "100%" }}>
+                  <PbPatchProposalCard
+                    proposal={msg.pbProposal}
+                    onApply={onApplyPatches}
+                  />
+                </div>
+              ) : msg.role === "pb_pipeline" && msg.pbPipeline ? (
+                <div style={{ width: "100%", maxWidth: "100%" }}>
+                  <PbPipelineCard card={msg.pbPipeline} onExpand={onPbPipelineExpand} />
+                </div>
+              ) : msg.role === "chart_explorer" && msg.flatData && msg.flatMetadata ? (
                 <div style={{ width: "100%", maxWidth: "100%" }}>
                   <ChartExplorer
                     flatData={msg.flatData}
@@ -968,6 +1164,44 @@ export function AICopilot({
           ))}
         </div>
       </div>
+
+      {/* Phase 5-UX-5: focus chip — user's next message targets a specific node */}
+      {focusedNodeId && (
+        <div style={{ padding: "4px 12px 0", flexShrink: 0 }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 4px 3px 10px",
+              background: "#ede9fe",
+              border: "1px solid #c4b5fd",
+              borderRadius: 12,
+              fontSize: 11,
+              color: "#4c1d95",
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ fontSize: 10 }}>📌</span>
+            <span>Focused on {focusedNodeLabel ?? focusedNodeId}</span>
+            <button
+              onClick={() => onClearFocus?.()}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "#6b46c1",
+                cursor: "pointer",
+                fontSize: 12,
+                padding: "0 4px",
+                lineHeight: 1,
+              }}
+              title="清除 focus"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Input */}
       <div style={{ padding: "8px 12px 12px", flexShrink: 0 }}>

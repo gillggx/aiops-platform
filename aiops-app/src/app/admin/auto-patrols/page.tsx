@@ -156,6 +156,10 @@ function emptyForm() {
     steps_mapping:  [] as StepMapping[],
     input_schema:   [] as InputSchemaField[],
     output_schema:  [] as OutputSchemaField[],
+    // Phase 4-B: pipeline-based binding
+    execution_mode: "skill" as "skill" | "pipeline",
+    pipeline_id: null as number | null,
+    input_binding: {} as Record<string, string>,
   };
 }
 
@@ -234,11 +238,15 @@ function AutoPatrolFixPanel({ skillId, errorMessage, success, onFixed }: {
   );
 }
 
+type PipelineOption = { id: number; name: string; status: string; inputs: Array<{ name: string; type: string; required?: boolean; example?: unknown; description?: string }> };
+
 export default function AutoPatrolsPage() {
   const [patrols, setPatrols]         = useState<AutoPatrol[]>([]);
   const [eventTypes, setEventTypes]   = useState<EventType[]>([]);
   const [showModal, setShowModal]     = useState(false);
   const [form, setForm]               = useState(emptyForm());
+  // Phase 4-B: available pipelines for the binding dropdown
+  const [pipelineOptions, setPipelineOptions] = useState<PipelineOption[]>([]);
 
   // Clarify dialog state
   const [clarifyOpen, setClarifyOpen] = useState(false);
@@ -286,6 +294,16 @@ export default function AutoPatrolsPage() {
       const list = Array.isArray(d) ? d : [];
       setEventTypes(list.filter(e => !e.description?.includes("自動建立")));
     }).catch(() => {});
+    // PR-B: Auto-Patrol can only bind to ACTIVE + auto_patrol kind pipelines.
+    fetch("/api/pipeline-builder/pipelines").then(r => r.json()).then((pipelines: Array<{ id: number; name: string; status: string; pipeline_kind?: string; pipeline_json: { inputs?: PipelineOption["inputs"] } }>) => {
+      const active = (Array.isArray(pipelines) ? pipelines : []).filter(p =>
+        p.status === "active" && (p.pipeline_kind ?? "diagnostic") === "auto_patrol",
+      );
+      setPipelineOptions(active.map(p => ({
+        id: p.id, name: p.name, status: p.status,
+        inputs: p.pipeline_json?.inputs ?? [],
+      })));
+    }).catch(() => {});
   }, []);
 
   // ── Modal helpers ─────────────────────────────────────────────────────────
@@ -319,6 +337,8 @@ export default function AutoPatrolsPage() {
     const scopeType: TargetScopeType = scope?.type ?? "all_equipment";
     const scopeIds = (scope?.equipment_ids ?? []).join(", ");
 
+    // Phase 4-B: detect execution mode from pipeline_id presence
+    const isPipelineMode = (p as AutoPatrol & { pipeline_id?: number | null }).pipeline_id != null;
     setForm({
       name:                   p.name,
       description:            p.description ?? "",
@@ -335,6 +355,9 @@ export default function AutoPatrolsPage() {
       steps_mapping:          [],
       input_schema:           [],
       output_schema:          [],
+      execution_mode:         isPipelineMode ? "pipeline" : "skill",
+      pipeline_id:            (p as AutoPatrol & { pipeline_id?: number | null }).pipeline_id ?? null,
+      input_binding:          (p as AutoPatrol & { input_binding?: Record<string, string> }).input_binding ?? {},
     });
 
     // Load embedded skill steps
@@ -543,7 +566,13 @@ export default function AutoPatrolsPage() {
     setError("");
     if (!form.name.trim()) { setError("Patrol 名稱必填"); return; }
     if (form.trigger_mode === "event" && !form.event_type_id) { setError("請選擇事件類型"); return; }
-    if (form.steps_mapping.length === 0) { setError("請先讓 AI 設計診斷計畫"); return; }
+    // Phase 4-B: validate based on execution mode
+    if (form.execution_mode === "skill" && form.steps_mapping.length === 0) {
+      setError("Skill 模式下請先讓 AI 設計診斷計畫"); return;
+    }
+    if (form.execution_mode === "pipeline" && form.pipeline_id == null) {
+      setError("Pipeline 模式下請選擇要綁定的 Pipeline"); return;
+    }
 
     setSaving(true);
     const finalSteps = form.steps_mapping.map(s => ({
@@ -559,7 +588,8 @@ export default function AutoPatrolsPage() {
         }
       : { type: "event_driven" as const, equipment_ids: [] };
 
-    const payload = {
+    const isPipelineMode = form.execution_mode === "pipeline";
+    const payload: Record<string, unknown> = {
       name:                   form.name.trim(),
       description:            form.description.trim(),
       auto_check_description: form.auto_check_description.trim(),
@@ -572,10 +602,17 @@ export default function AutoPatrolsPage() {
       target_scope:           targetScope,
       alarm_severity:         form.alarm_severity,
       alarm_title:            form.alarm_title.trim() || `[Auto-Patrol] ${form.name.trim()}`,
-      steps_mapping:          finalSteps,
-      input_schema:           form.input_schema,
-      output_schema:          form.output_schema,
     };
+    if (isPipelineMode) {
+      // Phase 4-B: Pipeline-backed — no embedded skill
+      payload.pipeline_id   = form.pipeline_id;
+      payload.input_binding = form.input_binding;
+    } else {
+      // Legacy skill-backed
+      payload.steps_mapping = finalSteps;
+      payload.input_schema  = form.input_schema;
+      payload.output_schema = form.output_schema;
+    }
 
     try {
       const isEdit = editingId !== null;
@@ -610,7 +647,11 @@ export default function AutoPatrolsPage() {
     }
   }
 
-  const canSave = form.name.trim().length > 0 && form.steps_mapping.length > 0;
+  const canSave = form.name.trim().length > 0 && (
+    form.execution_mode === "pipeline"
+      ? form.pipeline_id != null
+      : form.steps_mapping.length > 0
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -929,9 +970,143 @@ export default function AutoPatrolsPage() {
               </div>
             </div>
 
-            {/* ── 診斷計畫 ── */}
+            {/* ── Phase 4-B: 執行方式切換 ── */}
             <div style={S.section}>
-              <div style={S.sectionTitle}>④ 診斷計畫</div>
+              <div style={S.sectionTitle}>④ 執行方式</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button
+                  type="button"
+                  data-testid="exec-mode-skill"
+                  onClick={() => setForm(f => ({ ...f, execution_mode: "skill" }))}
+                  style={{
+                    padding: "8px 16px", fontSize: 13, fontWeight: 600,
+                    border: `1px solid ${form.execution_mode === "skill" ? "#3182ce" : "#cbd5e0"}`,
+                    background: form.execution_mode === "skill" ? "#ebf8ff" : "#fff",
+                    color: form.execution_mode === "skill" ? "#2c5282" : "#4a5568",
+                    borderRadius: 4, cursor: "pointer",
+                  }}
+                >
+                  🧩 Skill-based（legacy Python steps）
+                </button>
+                <button
+                  type="button"
+                  data-testid="exec-mode-pipeline"
+                  onClick={() => setForm(f => ({ ...f, execution_mode: "pipeline" }))}
+                  style={{
+                    padding: "8px 16px", fontSize: 13, fontWeight: 600,
+                    border: `1px solid ${form.execution_mode === "pipeline" ? "#38a169" : "#cbd5e0"}`,
+                    background: form.execution_mode === "pipeline" ? "#f0fff4" : "#fff",
+                    color: form.execution_mode === "pipeline" ? "#276749" : "#4a5568",
+                    borderRadius: 4, cursor: "pointer",
+                  }}
+                >
+                  🔄 Pipeline-based（Phase 4-B）
+                </button>
+              </div>
+            </div>
+
+            {/* ── Pipeline binding panel (Phase 4-B) ── */}
+            {form.execution_mode === "pipeline" && (
+              <div style={S.section}>
+                <div style={S.sectionTitle}>⑤ Pipeline 綁定</div>
+
+                <div style={S.row}>
+                  <label style={S.label}>Pipeline</label>
+                  <select
+                    data-testid="pipeline-select"
+                    value={form.pipeline_id ?? ""}
+                    onChange={e => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      // Auto-seed input_binding with examples from chosen pipeline
+                      const chosen = pipelineOptions.find(p => p.id === id);
+                      const seededBinding: Record<string, string> = {};
+                      if (chosen?.inputs) {
+                        for (const inp of chosen.inputs) {
+                          // Prefer $event.<name> as default binding source (common pattern)
+                          seededBinding[inp.name] = inp.name === "tool_id" ? "$event.equipment_id" : (inp.example ? String(inp.example) : "");
+                        }
+                      }
+                      setForm(f => ({ ...f, pipeline_id: id, input_binding: seededBinding }));
+                    }}
+                    style={{ ...S.input, minWidth: 360 }}
+                  >
+                    <option value="">— 選擇 Pipeline —</option>
+                    {pipelineOptions.map(p => (
+                      <option key={p.id} value={p.id}>
+                        #{p.id} {p.name} [{p.status}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {form.pipeline_id && (() => {
+                  const pipeline = pipelineOptions.find(p => p.id === form.pipeline_id);
+                  if (!pipeline) return null;
+                  if (pipeline.inputs.length === 0) {
+                    return (
+                      <div style={{ fontSize: 12, color: "#a0aec0", padding: 10, background: "#f7fafc", borderRadius: 4, marginTop: 8 }}>
+                        此 Pipeline 沒有宣告 inputs — 直接用 pipeline 內部的 hardcoded 參數執行。
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 10, color: "#718096", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 6 }}>
+                        Input Binding （{pipeline.inputs.length} 個變數）
+                      </div>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#f7fafc" }}>
+                            <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "#4a5568", fontWeight: 600 }}>變數</th>
+                            <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "#4a5568", fontWeight: 600 }}>Type</th>
+                            <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "#4a5568", fontWeight: 600 }}>綁定值</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pipeline.inputs.map(inp => (
+                            <tr key={inp.name} data-testid={`pipeline-binding-${inp.name}`}>
+                              <td style={{ padding: "5px 8px", borderBottom: "1px solid #edf2f7" }}>
+                                <code style={{ color: "#3730A3", fontFamily: "ui-monospace, monospace" }}>${inp.name}</code>
+                                {inp.required && <span style={{ color: "#c53030", marginLeft: 4 }}>*</span>}
+                              </td>
+                              <td style={{ padding: "5px 8px", borderBottom: "1px solid #edf2f7", color: "#718096", fontFamily: "ui-monospace, monospace", fontSize: 11 }}>
+                                {inp.type}
+                              </td>
+                              <td style={{ padding: "5px 8px", borderBottom: "1px solid #edf2f7" }}>
+                                <input
+                                  type="text"
+                                  value={form.input_binding[inp.name] ?? ""}
+                                  onChange={e => setForm(f => ({ ...f, input_binding: { ...f.input_binding, [inp.name]: e.target.value } }))}
+                                  placeholder={inp.example ? String(inp.example) : "literal or $event.xxx"}
+                                  list={`binding-suggest-${inp.name}`}
+                                  style={{ ...S.input, fontSize: 11, width: "100%" }}
+                                />
+                                <datalist id={`binding-suggest-${inp.name}`}>
+                                  <option value="$event.equipment_id" />
+                                  <option value="$event.toolID" />
+                                  <option value="$event.lot_id" />
+                                  <option value="$event.step" />
+                                  <option value="$event.event_time" />
+                                  <option value="$context.equipment_id" />
+                                </datalist>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div style={{ fontSize: 10, color: "#a0aec0", marginTop: 6 }}>
+                        提示：literal（直接值） / <code>$event.xxx</code> / <code>$context.xxx</code>（從觸發 payload 取）
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* ── 診斷計畫 (Skill mode only) ── */}
+            {form.execution_mode === "skill" && (
+            <div style={S.section}>
+              <div style={S.sectionTitle}>⑤ 診斷計畫</div>
 
               <div style={S.row}>
                 <label style={S.label}>自動檢查描述</label>
@@ -1138,6 +1313,7 @@ export default function AutoPatrolsPage() {
               )}
             </div>
 
+            )}
             {error && <div style={{ color: "#c53030", fontSize: 12, marginBottom: 12 }}>{error}</div>}
 
             {/* Action buttons */}

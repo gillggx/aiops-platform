@@ -13,6 +13,7 @@ from langchain_core.runnables import RunnableConfig
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from app.config import get_settings
 from app.services.agent_orchestrator_v2.state import MAX_ITERATIONS
 from app.services.tool_dispatcher import TOOL_SCHEMAS
 
@@ -20,7 +21,28 @@ from app.services.tool_dispatcher import TOOL_SCHEMAS
 # execute_mcp: internal only (skill code uses it)
 # query_data: replaced by plan_pipeline
 # execute_analysis: replaced by plan_pipeline Stage 4+5
-_LLM_HIDDEN_TOOLS = {"execute_mcp", "query_data", "execute_analysis"}
+# propose_pipeline_patch: Phase 5-UX-6 — retired in favor of build_pipeline_live
+#   (schema kept in tool_dispatcher for future copilot-mode reactivation)
+_LLM_HIDDEN_TOOLS = {"execute_mcp", "query_data", "execute_analysis", "propose_pipeline_patch"}
+# Phase 4-C: if PIPELINE_ONLY_MODE is on, additionally hide execute_skill so
+# Agent is forced to use build_pipeline_live (or answer with text for knowledge Q).
+_PIPELINE_ONLY_EXTRA_HIDDEN = {"execute_skill"}
+
+
+def _visible_tools() -> List[Dict[str, Any]]:
+    """Build LLM-visible tool list, honoring PIPELINE_ONLY_MODE at call time so
+    flips can be hot-reloaded via settings without restart-coupling."""
+    hidden = set(_LLM_HIDDEN_TOOLS)
+    try:
+        if get_settings().PIPELINE_ONLY_MODE:
+            hidden |= _PIPELINE_ONLY_EXTRA_HIDDEN
+    except Exception:
+        # Settings may not be initialised in some test paths — default safe
+        pass
+    return [t for t in TOOL_SCHEMAS if t["name"] not in hidden]
+
+
+# Backward-compat alias (some callers import LLM_TOOL_SCHEMAS directly).
 LLM_TOOL_SCHEMAS = [t for t in TOOL_SCHEMAS if t["name"] not in _LLM_HIDDEN_TOOLS]
 
 logger = logging.getLogger(__name__)
@@ -97,12 +119,15 @@ async def llm_call_node(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
     # Convert LangChain messages → v1 format
     system, v1_messages = _langchain_messages_to_v1(messages, system_text)
 
+    # Phase 4-C: call _visible_tools() so PIPELINE_ONLY_MODE flag is consulted
+    # at invocation time (supports env/config hot-reload without process restart).
+    visible_tools = _visible_tools()
     try:
         response = await llm.create(
             system=system,
             messages=v1_messages,
             max_tokens=8192,
-            tools=LLM_TOOL_SCHEMAS,
+            tools=visible_tools,
         )
     except Exception as exc:
         logger.exception("LLM call failed at iteration %d", iteration)

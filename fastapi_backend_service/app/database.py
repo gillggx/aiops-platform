@@ -245,18 +245,127 @@ async def _safe_add_columns(conn) -> None:
         ("alarms", "diagnostic_log_id", "INTEGER REFERENCES execution_logs(id) ON DELETE SET NULL"),
         # skill_definitions: which auto_patrol alarm triggers this Diagnostic Rule
         ("skill_definitions", "trigger_patrol_id", "INTEGER REFERENCES auto_patrols(id) ON DELETE SET NULL"),
+        # v3.4 Pipeline Builder: block examples (JSON array text)
+        ("pb_blocks", "examples", "TEXT NOT NULL DEFAULT '[]'"),
+        # Phase 5-UX-3b: flat-column schema hints for LLM (JSON array)
+        ("pb_blocks", "output_columns_hint", "TEXT NOT NULL DEFAULT '[]'"),
+        # Phase 5-UX-3b: session mode — persist Agent-built pipeline + run_id + title
+        ("agent_sessions", "last_pipeline_json", "TEXT"),
+        ("agent_sessions", "last_pipeline_run_id", "INTEGER"),
+        ("agent_sessions", "title", "TEXT"),
+        ("agent_sessions", "updated_at", "TIMESTAMP"),
+        # Phase 4-A: skill_definitions.pipeline_config (declared in ORM model, missing in legacy DB)
+        ("skill_definitions", "pipeline_config", "TEXT"),
+        # Phase 4-B: auto_patrols links pipeline (with input_binding) instead of skill
+        ("auto_patrols", "pipeline_id", "INTEGER REFERENCES pb_pipelines(id) ON DELETE SET NULL"),
+        ("auto_patrols", "input_binding", "TEXT"),
+        # PR-B / Phase 5-lifecycle: pipeline_kind + usage_stats
+        ("pb_pipelines", "pipeline_kind", "VARCHAR(20) NOT NULL DEFAULT 'diagnostic'"),
+        ("pb_pipelines", "usage_stats", "TEXT NOT NULL DEFAULT '{\"invoke_count\":0,\"last_invoked_at\":null,\"last_triggered_at\":null}'"),
+        ("pb_pipelines", "locked_at", "TIMESTAMP"),
+        ("pb_pipelines", "locked_by", "TEXT"),
+        ("pb_pipelines", "auto_doc", "TEXT"),
+        ("pb_pipelines", "published_at", "TIMESTAMP"),
+        ("pb_pipelines", "archived_at", "TIMESTAMP"),
     ]
-    import sqlalchemy as sa
+    import logging as _logging
+    import sqlalchemy as sa  # used below for parametrized UPDATEs
+    _mig_logger = _logging.getLogger(__name__)
     for table, column, col_type in migrations:
+        # PR-D fix: each ALTER in its own savepoint so one failure doesn't
+        # poison the outer transaction and silently skip later migrations.
+        # Use exec_driver_sql (not text()) so JSON defaults containing `:0` etc.
+        # are NOT misread as bind parameter placeholders.
         try:
-            # Use "IF NOT EXISTS" on Postgres for true idempotency
             if dialect != "sqlite":
-                await conn.execute(sa.text(
-                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
-                ))
+                sql = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
             else:
-                await conn.execute(sa.text(
-                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-                ))
-        except Exception:
-            pass  # Column already exists — safe to ignore
+                sql = f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(sql)
+        except Exception as e:
+            _mig_logger.warning(
+                "migration ALTER TABLE %s ADD COLUMN %s failed (may already exist): %s",
+                table, column, e,
+            )
+
+    # Phase 4-B: relax NOT NULL on skill_id now that pipeline_id is an alternative.
+    # Postgres-only (SQLite has limited ALTER COLUMN semantics).
+    if dialect != "sqlite":
+        for table, column in [("auto_patrols", "skill_id")]:
+            try:
+                async with conn.begin_nested():
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL"
+                    )
+            except Exception as e:
+                _mig_logger.debug("DROP NOT NULL on %s.%s skipped: %s", table, column, e)
+
+        # PR-B: widen pb_pipelines.status VARCHAR(16) → VARCHAR(20) to fit
+        # 'validating' + 'archived' names. Idempotent — ALTER to same size is no-op.
+        try:
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(
+                    "ALTER TABLE pb_pipelines ALTER COLUMN status TYPE VARCHAR(20)"
+                )
+        except Exception as e:
+            _mig_logger.debug("widen pb_pipelines.status skipped: %s", e)
+
+        # Phase 5-UX-3b: relax pb_pipelines.pipeline_kind NOT NULL — ad-hoc
+        # session pipelines don't carry a kind until they're published.
+        try:
+            async with conn.begin_nested():
+                await conn.exec_driver_sql(
+                    "ALTER TABLE pb_pipelines ALTER COLUMN pipeline_kind DROP NOT NULL"
+                )
+        except Exception as e:
+            _mig_logger.debug("DROP NOT NULL on pb_pipelines.pipeline_kind skipped: %s", e)
+
+    # PR-B: remap legacy pipeline status names idempotently.
+    # draft → draft (unchanged); pi_run → validating; production → active; deprecated → archived
+    for old_name, new_name in [
+        ("pi_run", "validating"),
+        ("production", "active"),
+        ("deprecated", "archived"),
+    ]:
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    sa.text("UPDATE pb_pipelines SET status = :new WHERE status = :old"),
+                    {"new": new_name, "old": old_name},
+                )
+        except Exception as e:
+            _mig_logger.debug("status remap %s→%s skipped: %s", old_name, new_name, e)
+
+    # PR-B: backfill pipeline_kind — pipelines that contain block_alert in JSON
+    # are classified as auto_patrol; others stay diagnostic.
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(
+                "UPDATE pb_pipelines SET pipeline_kind = 'auto_patrol' "
+                "WHERE pipeline_kind = 'diagnostic' "
+                "AND pipeline_json LIKE '%block_alert%'"
+            )
+    except Exception as e:
+        _mig_logger.debug("pipeline_kind backfill skipped: %s", e)
+
+    # Phase 5-UX-7: 3-kind split.
+    # diagnostic + has block_alert → auto_check (alarm-triggered diagnosis)
+    # diagnostic + no block_alert  → skill (agent-invocable on-demand)
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(
+                "UPDATE pb_pipelines SET pipeline_kind = 'auto_check' "
+                "WHERE pipeline_kind = 'diagnostic' "
+                "AND pipeline_json LIKE '%block_alert%'"
+            )
+    except Exception as e:
+        _mig_logger.debug("diagnostic→auto_check backfill skipped: %s", e)
+    try:
+        async with conn.begin_nested():
+            await conn.exec_driver_sql(
+                "UPDATE pb_pipelines SET pipeline_kind = 'skill' "
+                "WHERE pipeline_kind = 'diagnostic'"
+            )
+    except Exception as e:
+        _mig_logger.debug("diagnostic→skill backfill skipped: %s", e)

@@ -278,14 +278,41 @@ export default function MySkillsPage() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={S.header}>
-        <div>
-          <h1 style={S.title}>My Skills</h1>
-          <div style={{ fontSize: 12, color: "#718096", marginTop: 2 }}>
-            Agent chat 常用分析工具 — 從對話 promote 或手動建立
+      {/* PR-4E: red "frozen" banner */}
+      <div style={{
+        background: "#FEE2E2", border: "1px solid #FCA5A5",
+        borderRadius: 6, padding: "12px 16px", marginBottom: 16,
+        fontSize: 13, color: "#7F1D1D", display: "flex", alignItems: "center", gap: 12,
+      }}>
+        <span style={{ fontSize: 22 }}>🔒</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>Legacy Skills — 已凍結</div>
+          <div style={{ fontSize: 12, color: "#991B1B", lineHeight: 1.5 }}>
+            新分析工具請到 <a
+              href="/admin/pipeline-builder"
+              style={{ color: "#7F1D1D", fontWeight: 600, textDecoration: "underline" }}
+            >Pipeline Builder</a> 建立；Agent 會優先呼叫 Published Skills。
+            本頁僅供 view / 🔄 migrate。
           </div>
         </div>
-        <button style={S.btn("#2b6cb0")} onClick={openCreate}>+ 建立 Skill</button>
+      </div>
+
+      <div style={S.header}>
+        <div>
+          <h1 style={S.title}>My Skills <span style={{ fontSize: 12, color: "#94A3B8", fontWeight: 400 }}>(frozen — view / migrate only)</span></h1>
+          <div style={{ fontSize: 12, color: "#718096", marginTop: 2 }}>
+            Agent chat 常用分析工具 — legacy Python steps 路徑
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/admin/pipeline-builder"
+            style={{ ...S.btn("#16A34A"), textDecoration: "none", display: "inline-flex", alignItems: "center", fontWeight: 600 }}
+            title="建立新 skill 只能在 Pipeline Builder"
+          >
+            ＋ 新 Skill 請到 Pipeline Builder →
+          </a>
+        </div>
       </div>
 
       {/* ── Skill List ── */}

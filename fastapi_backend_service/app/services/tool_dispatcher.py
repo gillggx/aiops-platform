@@ -25,55 +25,140 @@ logger = logging.getLogger(__name__)
 
 TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
-        "name": "plan_pipeline",
+        "name": "build_pipeline_live",
         "description": (
-            "規劃並執行一個 Data Pipeline。系統會自動：\n"
-            "  Stage 3: 撈資料（呼叫 MCP）\n"
-            "  Stage 4: 扁平化 + 自訂轉換（filter/join）\n"
-            "  Stage 5: 統計計算（回歸/OOC check — 可選）\n"
-            "  Stage 6: 資料呈現（DataExplorer 互動圖表 — 可選）\n"
+            "Phase 5-UX-6: 為資料問題動手建一條 pipeline，逐步把 node 拖到 canvas 上。\n"
             "\n"
-            "你只需要規劃 pipeline，系統自動執行每個 stage。"
+            "使用時機：\n"
+            "  - 使用者問「EQP-01 最近 50 次 SPC xbar 趨勢」「比較 apc_etch_time_offset 跟 spc_xbar」等需要 pipeline 的分析\n"
+            "  - `search_published_skills` 找不到符合的已發佈 Skill 時\n"
+            "\n"
+            "這不是一次性輸出 pipeline_json — 你只要描述**目標**，系統會啟動 Glass Box\n"
+            "builder sub-agent，它會一個個呼叫 `add_node` / `connect` / `set_param` 工具把\n"
+            "pipeline 建起來並跑。過程在 canvas overlay 上即時呈現給使用者看。\n"
+            "\n"
+            "輸入：\n"
+            "  - goal (必填) — 自然語言描述要建什麼 pipeline，e.g. 「EQP-07 最近 100 次\n"
+            "    process 的 xbar_chart trend，配對 apc_etch_time_offset 做線性回歸」\n"
+            "  - notes (選填) — 給 sub-agent 的補充 context（已知機台/批次 filter 等）\n"
+            "\n"
+            "這個工具回傳：`{pipeline_json, summary, node_count, run_status}`，你拿到後\n"
+            "用人話向使用者總結做了什麼、結果如何。詳細圖表/資料表已在 canvas overlay\n"
+            "自動 render 給使用者，不用你重複描述。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["goal"],
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "要建的 pipeline 的自然語言說明（越具體越好）",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "選填的額外 context，例如已知的機台/批次/時間範圍 filter",
+                },
+                "base_pipeline_id": {
+                    "type": "integer",
+                    "description": "選填。若使用者正在改某條既有 pipeline，傳它的 id，sub-agent 會從當前狀態接續編輯",
+                },
+            },
+        },
+    },
+    {
+        "name": "propose_pipeline_patch",
+        "description": (
+            "Phase 5-UX-5 (Copilot): 提出對目前畫布 pipeline 的結構性修改提案。\n"
+            "\n"
+            "使用時機：\n"
+            "  - 使用者正在 /admin/pipeline-builder 編輯一條 pipeline，提出修改需求\n"
+            "    （e.g. 『加一個 Rolling Window 檢查連續 3 次 OOC』）\n"
+            "  - 你 *不要* 直接改 canvas；而是回傳 patch 提案，前端會顯示\n"
+            "    『套用到 Canvas / 不用了』兩個按鈕，等使用者確認後才真正改動\n"
+            "\n"
+            "Patch ops 支援：\n"
+            "  - insert_after  : 在某個既有 node 之後插入新 node + 連邊\n"
+            "  - insert_before : 在某個既有 node 之前插入新 node + 連邊\n"
+            "  - update_params : 就地改既有 node 的 params\n"
+            "  - delete_node   : 刪除既有 node（連帶邊會被前端清乾淨）\n"
+            "  - connect_edge  : 新增一條邊（通常配 insert 用）\n"
+            "\n"
+            "每個 patch 裡的 block_id 必須是 blocks catalog 裡的合法值（參考 prompt 裡的\n"
+            "『Available Blocks』列表）。Params 結構要符合該 block 的 param_schema。\n"
+            "若你需要查既有 canvas，對話 context 中會有當前 pipeline_json 的摘要。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["patches", "reason"],
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "1-2 句話人類可讀的說明：你打算做什麼改變、為什麼（使用者會看到）",
+                },
+                "patches": {
+                    "type": "array",
+                    "description": "List of structural patches to propose; applied in order by frontend if user accepts",
+                    "items": {
+                        "type": "object",
+                        "required": ["op"],
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["insert_after", "insert_before", "update_params", "delete_node", "connect_edge"],
+                            },
+                            "anchor_node_id": {"type": "string", "description": "Existing node id, used by insert_after / insert_before"},
+                            "node_id": {"type": "string", "description": "Existing node id, used by update_params / delete_node"},
+                            "new_node_id": {"type": "string", "description": "Desired id for the newly-inserted node (insert_*)"},
+                            "block_id": {"type": "string", "description": "Block name, e.g. block_rolling_window (insert_*)"},
+                            "block_version": {"type": "string", "default": "1.0.0"},
+                            "params": {"type": "object", "description": "Block params for insert_* or update_params"},
+                            "from": {
+                                "type": "object",
+                                "description": "connect_edge source: {node, port}",
+                                "properties": {"node": {"type": "string"}, "port": {"type": "string"}},
+                            },
+                            "to": {
+                                "type": "object",
+                                "description": "connect_edge sink: {node, port}",
+                                "properties": {"node": {"type": "string"}, "port": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+    {
+        "name": "search_published_skills",
+        "description": (
+            "PR-C: 搜尋已發佈的 Skills（pb_published_skills，kind=skill 的 pipelines）。\n"
+            "當使用者描述一個查案需求時，先呼叫這個工具看有沒有現成 skill 可用，\n"
+            "再用 invoke_published_skill 執行。回傳：slug / use_case / when_to_use / inputs_schema。\n"
+            "以簡體或中文/英文關鍵字搜尋，會 match use_case + name + tags 欄位。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "data_retrieval": {
-                    "type": "object",
-                    "description": "Stage 3: 撈資料。mcp=MCP name, params=查詢參數",
-                    "properties": {
-                        "mcp": {"type": "string", "description": "MCP name (get_process_info / get_process_summary / list_tools)"},
-                        "params": {"type": "object", "description": "查詢參數 e.g. {equipment_id:'EQP-01', step:'STEP_001', since:'24h'}"},
-                    },
-                    "required": ["mcp"],
-                },
-                "data_transform": {
-                    "type": "object",
-                    "description": "Stage 4: 自訂資料轉換（可選）。不給=只做基礎扁平化。用自然語言描述轉換邏輯。",
-                    "properties": {
-                        "description": {"type": "string", "description": "轉換需求描述，e.g. '篩選 xbar_chart，與 APC rf_power_bias 按 eventTime join'"},
-                    },
-                },
-                "compute": {
-                    "type": "object",
-                    "description": "Stage 5: 統計計算（可選）。不給=跳過。",
-                    "properties": {
-                        "description": {"type": "string", "description": "計算需求，e.g. '對每種 chart_type vs rf_power_bias 做線性回歸，計算 R²'"},
-                        "type": {"type": "string", "description": "計算類型 e.g. linear_regression / ooc_check / correlation / normal_distribution"},
-                    },
-                },
-                "presentation": {
-                    "type": "object",
-                    "description": "Stage 6: 資料呈現（可選）。不給=純文字回答，不開 DataExplorer。使用者明確要看圖/趨勢才給。",
-                    "properties": {
-                        "data_source": {"type": "string", "description": "spc_data / apc_data / dc_data / recipe_data / fdc_data / ec_data / processed_data / overlay"},
-                        "chart_type": {"type": "string", "description": "line / scatter / bar / spc (預設 line)"},
-                        "filter": {"type": "object", "description": "篩選條件 e.g. {chart_type:'xbar_chart'}"},
-                        "group_by": {"type": "string"},
-                    },
-                },
+                "query": {"type": "string", "description": "自然語言查詢（e.g. 'xbar OOC' / 'recipe drift')"},
+                "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
             },
-            "required": ["data_retrieval"],
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "invoke_published_skill",
+        "description": (
+            "PR-C: 執行一個已發佈的 Skill（by slug）。會回傳統一的\n"
+            "{triggered, evidence, charts} 契約；charts 直接可餵給前端 Data Explorer 渲染。\n"
+            "slug 從 search_published_skills 取得；inputs 必須符合該 skill 的 inputs_schema。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Skill 的 stable identifier"},
+                "inputs": {"type": "object", "description": "Pipeline inputs（name→value）"},
+            },
+            "required": ["slug", "inputs"],
         },
     },
     {
@@ -571,7 +656,25 @@ class ToolDispatcher:
         logger.info("ToolDispatcher.execute: tool=%s input=%s", tool_name, json.dumps(tool_input, ensure_ascii=False)[:200])
         try:
             match tool_name:
+                case "search_published_skills":
+                    return await self._call_api(
+                        "POST",
+                        "/api/v1/pipeline-builder/published-skills/search",
+                        body={
+                            "query": tool_input.get("query", ""),
+                            "top_k": tool_input.get("top_k", 5),
+                        },
+                    )
+                case "invoke_published_skill":
+                    return await self._invoke_published_skill(tool_input)
                 case "execute_skill":
+                    # PR-4E: deprecated path — logged so we can track remaining
+                    # legacy usage before Phase 4-F hard-removes it.
+                    logger.warning(
+                        "DEPRECATED: execute_skill called (skill_id=%s). Migrate to "
+                        "invoke_published_skill via the Pipeline Builder.",
+                        tool_input.get("skill_id"),
+                    )
                     return await self._call_api(
                         "POST",
                         f"/api/v1/execute/skill/{tool_input['skill_id']}",
@@ -773,6 +876,59 @@ class ToolDispatcher:
                 logger.warning("Smart Sampling interceptor failed (non-blocking): %s", exc)
 
         return result
+
+    async def _invoke_published_skill(self, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+        """PR-C: resolve published skill by slug → load its pipeline → execute."""
+        slug = tool_input.get("slug")
+        if not slug:
+            return {"status": "error", "message": "slug is required"}
+        inputs = tool_input.get("inputs") or {}
+
+        # 1. Find the published skill
+        search = await self._call_api(
+            "POST", "/api/v1/pipeline-builder/published-skills/search",
+            body={"query": slug, "top_k": 20},
+        )
+        match = None
+        if isinstance(search, list):
+            for row in search:
+                if isinstance(row, dict) and row.get("slug") == slug:
+                    match = row
+                    break
+        if match is None:
+            return {"status": "error", "message": f"Published skill '{slug}' not found"}
+
+        # 2. Load its pipeline definition
+        pipe_id = match.get("pipeline_id")
+        pipe = await self._call_api("GET", f"/api/v1/pipeline-builder/pipelines/{pipe_id}")
+        if not isinstance(pipe, dict) or "pipeline_json" not in pipe:
+            return {"status": "error", "message": f"Pipeline {pipe_id} payload not available"}
+
+        # 3. Execute with provided inputs (telemetry bumps via pipeline_id)
+        exec_result = await self._call_api(
+            "POST", "/api/v1/pipeline-builder/execute",
+            body={
+                "pipeline_json": pipe["pipeline_json"],
+                "triggered_by": "agent",
+                "inputs": inputs,
+                "pipeline_id": pipe_id,
+            },
+        )
+        if not isinstance(exec_result, dict):
+            return {"status": "error", "message": "Executor returned non-dict"}
+
+        # Summarize for LLM — Agent shouldn't need to parse every node_result
+        summary = exec_result.get("result_summary") or {}
+        return {
+            "status": exec_result.get("status", "unknown"),
+            "slug": slug,
+            "skill_name": match.get("name"),
+            "triggered": bool(summary.get("triggered")) if isinstance(summary, dict) else False,
+            "evidence_rows": (summary.get("evidence_rows") if isinstance(summary, dict) else 0),
+            "charts": (summary.get("charts") if isinstance(summary, dict) else []) or [],
+            "run_id": exec_result.get("run_id"),
+            "error_message": exec_result.get("error_message"),
+        }
 
     async def _call_api(
         self, method: str, path: str, body: Optional[Dict] = None,

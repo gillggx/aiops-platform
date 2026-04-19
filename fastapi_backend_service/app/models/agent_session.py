@@ -45,3 +45,14 @@ class AgentSessionModel(Base):
     workspace_state: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )
+    # Phase 5-UX-3b: snapshot of the last pb-pipeline the Agent built in this
+    # session. Used by /chat/[id] to restore the canvas on page reload.
+    last_pipeline_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_pipeline_run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # First user message — shown as session title in "my sessions" list
+    title: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        default=lambda: datetime.now(tz=timezone.utc),
+        onupdate=lambda: datetime.now(tz=timezone.utc),
+    )

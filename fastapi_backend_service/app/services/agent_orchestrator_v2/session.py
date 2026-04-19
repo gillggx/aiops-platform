@@ -83,6 +83,14 @@ async def save_session(
     row.messages = history_json
     row.cumulative_tokens = cumulative_tokens
     row.updated_at = datetime.now(tz=timezone.utc)
+    # Phase 5-UX-3b: backfill session title from first user message (for listing)
+    if not getattr(row, "title", None):
+        first_user = next(
+            (m for m in messages if isinstance(m, HumanMessage)),
+            None,
+        )
+        if first_user and isinstance(first_user.content, str):
+            row.title = first_user.content[:200]
     await db.commit()
 
 

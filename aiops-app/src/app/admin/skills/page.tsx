@@ -226,6 +226,19 @@ export default function DiagnosticRulesPage() {
   const [consoleLogs, setConsoleLogs]   = useState<{ text: string; ok?: boolean }[]>([]);
   const [error, setError]           = useState("");
 
+  // Phase 4-A migration modal state
+  const [migrationPreview, setMigrationPreview] = useState<{
+    skill_id: number | string;
+    skill_name: string;
+    status: "full" | "skeleton" | "manual";
+    pipeline_json: Record<string, unknown>;
+    notes: string[];
+    detected_mcps: string[];
+    persisted: boolean;
+    pipeline_id?: number;
+  } | null>(null);
+  const [migrating, setMigrating] = useState(false);
+
   // ── Data loading ──────────────────────────────────────────────────────────
 
   function reloadList() {
@@ -299,6 +312,53 @@ export default function DiagnosticRulesPage() {
     if (!confirm("確定刪除此 Rule？")) return;
     await fetch(`/api/admin/rules/${id}`, { method: "DELETE" });
     reloadList();
+  }
+
+  // Phase 4-A: open migration preview modal (dry-run, no DB write)
+  async function handleMigratePreview(ruleId: string | number) {
+    setMigrating(true);
+    try {
+      const res = await fetch(`/api/pipeline-builder/migrate-skill/${ruleId}?dry_run=true`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        alert(`Migration preview failed: ${res.status} ${txt}`);
+        return;
+      }
+      const data = await res.json();
+      setMigrationPreview(data);
+    } catch (e) {
+      alert(`Migration preview error: ${(e as Error).message}`);
+    } finally {
+      setMigrating(false);
+    }
+  }
+
+  // Commit migration (writes new pipeline as draft)
+  async function handleMigrateConfirm() {
+    if (!migrationPreview) return;
+    setMigrating(true);
+    try {
+      const res = await fetch(
+        `/api/pipeline-builder/migrate-skill/${migrationPreview.skill_id}?dry_run=false`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        alert(`Migration failed: ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+      // On success, close modal and redirect to the new pipeline in Builder
+      setMigrationPreview(null);
+      if (data.pipeline_id) {
+        window.location.href = `/admin/pipeline-builder/${data.pipeline_id}`;
+      }
+    } catch (e) {
+      alert(`Migration error: ${(e as Error).message}`);
+    } finally {
+      setMigrating(false);
+    }
   }
 
   async function handleSave() {
@@ -543,10 +603,42 @@ export default function DiagnosticRulesPage() {
 
   return (
     <div style={S.page}>
+      {/* PR-4E: red "frozen" banner — create path disabled entirely */}
+      <div style={{
+        background: "#FEE2E2", border: "1px solid #FCA5A5",
+        borderRadius: 6, padding: "12px 16px", marginBottom: 16,
+        fontSize: 13, color: "#7F1D1D", display: "flex", alignItems: "center", gap: 12,
+      }}>
+        <span style={{ fontSize: 22 }}>🔒</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>Legacy Diagnostic Rules — 已凍結</div>
+          <div style={{ fontSize: 12, color: "#991B1B", lineHeight: 1.5 }}>
+            所有新規則請到 <a
+              href="/admin/pipeline-builder"
+              style={{ color: "#7F1D1D", fontWeight: 600, textDecoration: "underline" }}
+            >Pipeline Builder</a> 建立。
+            本頁僅供檢視 / 🔄 一鍵遷移舊規則。當 27 條已遷移 pipeline 驗收完後本頁將下線。
+          </div>
+        </div>
+      </div>
+
       {/* Header */}
       <div style={S.header}>
-        <div style={S.title}>Diagnostic Rules</div>
-        <button style={S.btn("#3182ce")} onClick={openCreate}>+ 新增 Rule</button>
+        <div style={S.title}>
+          Diagnostic Rules
+          <span style={{ fontSize: 12, color: "#94A3B8", fontWeight: 400, marginLeft: 8 }}>
+            (frozen — view / migrate only)
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/admin/pipeline-builder"
+            style={{ ...S.btn("#16A34A"), textDecoration: "none", display: "inline-flex", alignItems: "center", fontWeight: 600 }}
+            title="建立新規則只能在 Pipeline Builder"
+          >
+            ＋ 新規則請到 Pipeline Builder →
+          </a>
+        </div>
       </div>
 
       {/* Table */}
@@ -615,6 +707,14 @@ export default function DiagnosticRulesPage() {
               <td style={S.td}>
                 <div style={{ display: "flex", gap: 4, flexWrap: "nowrap" }}>
                   <button style={S.btnSm("#4a5568")} onClick={() => openEdit(rule)}>編輯</button>
+                  <button
+                    style={S.btnSm("#2b6cb0")}
+                    onClick={() => handleMigratePreview(rule.id)}
+                    disabled={migrating}
+                    title="遷移為 Pipeline (dry-run 先預覽)"
+                  >
+                    {migrating ? "…" : "🔄 Pipeline"}
+                  </button>
                   <button style={S.btnSm("#e53e3e")} onClick={() => handleDelete(rule.id)}>刪除</button>
                 </div>
               </td>
@@ -896,6 +996,78 @@ export default function DiagnosticRulesPage() {
                 onClick={handleSave}
               >
                 {editing ? "更新 Rule" : "儲存 Rule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 4-A: migration preview modal (dry-run) */}
+      {migrationPreview && (
+        <div style={S.overlay}>
+          <div style={{ ...S.modal, width: 760 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <span style={{ fontSize: 20 }}>🔄</span>
+              <h2 style={{ margin: 0, flex: 1 }}>Pipeline Migration Preview</h2>
+              <span
+                style={{
+                  padding: "3px 10px", borderRadius: 12, fontSize: 11, fontWeight: 700,
+                  background: migrationPreview.status === "full" ? "#c6f6d5"
+                    : migrationPreview.status === "skeleton" ? "#fefcbf" : "#fed7d7",
+                  color: migrationPreview.status === "full" ? "#276749"
+                    : migrationPreview.status === "skeleton" ? "#744210" : "#9b2c2c",
+                  textTransform: "uppercase", letterSpacing: "0.04em",
+                }}
+              >
+                {migrationPreview.status}
+              </span>
+            </div>
+            <div style={{ fontSize: 13, color: "#4a5568", marginBottom: 10 }}>
+              <strong>{migrationPreview.skill_name}</strong> (skill #{migrationPreview.skill_id})
+            </div>
+
+            <div style={{ background: "#f7fafc", border: "1px solid #e2e8f0", borderRadius: 4, padding: 10, marginBottom: 12 }}>
+              <div style={{ fontSize: 10, color: "#718096", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 6 }}>
+                產出節點鏈 ({(migrationPreview.pipeline_json?.nodes as Array<{ block_id: string }> | undefined)?.length ?? 0})
+              </div>
+              <div style={{ fontSize: 12, fontFamily: "ui-monospace, monospace", color: "#2d3748" }}>
+                {((migrationPreview.pipeline_json?.nodes ?? []) as Array<{ block_id: string }>).map(n => n.block_id.replace("block_", "")).join(" → ")}
+              </div>
+            </div>
+
+            {migrationPreview.detected_mcps?.length > 0 && (
+              <div style={{ fontSize: 12, marginBottom: 10 }}>
+                <strong>MCPs detected:</strong> {migrationPreview.detected_mcps.join(", ")}
+              </div>
+            )}
+
+            {migrationPreview.notes?.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, color: "#718096", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 4 }}>Notes</div>
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: "#4a5568", lineHeight: 1.5 }}>
+                  {migrationPreview.notes.map((n, i) => <li key={i}>{n}</li>)}
+                </ul>
+              </div>
+            )}
+
+            <details style={{ marginBottom: 12 }}>
+              <summary style={{ fontSize: 11, color: "#718096", cursor: "pointer" }}>
+                完整 pipeline_json ({JSON.stringify(migrationPreview.pipeline_json).length} chars)
+              </summary>
+              <pre style={{ fontSize: 10, background: "#1a202c", color: "#edf2f7", padding: 10, borderRadius: 4, marginTop: 6, maxHeight: 280, overflow: "auto" }}>
+                {JSON.stringify(migrationPreview.pipeline_json, null, 2)}
+              </pre>
+            </details>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button style={S.btn("#a0aec0")} onClick={() => setMigrationPreview(null)}>關閉</button>
+              <button
+                style={S.btn(migrationPreview.status !== "manual" ? "#38a169" : "#a0aec0")}
+                disabled={migrationPreview.status === "manual" || migrating}
+                onClick={handleMigrateConfirm}
+                title={migrationPreview.status === "manual" ? "Manual-only skill — cannot auto-migrate" : "寫入 pb_pipelines 並跳轉到 Builder 編輯"}
+              >
+                {migrating ? "遷移中…" : "確認遷移 → 開 Builder"}
               </button>
             </div>
           </div>

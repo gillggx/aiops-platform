@@ -91,6 +91,18 @@ class Config(BaseSettings):
         default="http://localhost:8012",
         description="Base URL of the OntologySimulator service (e.g. http://localhost:8012 or http://sim.internal:8012)",
     )
+    # Phase 4-C: restrict Copilot tools to pipeline-centric ones.
+    # When True, `execute_skill` is hidden from the LLM; Agent must use
+    # `plan_pipeline` for all data-retrieval / analysis questions. Knowledge-only
+    # questions still get text responses (LLM answers without tool calls).
+    PIPELINE_ONLY_MODE: bool = Field(
+        default=True,
+        description=(
+            "Phase 4-E: Copilot now uses plan_pipeline / search_published_skills only. "
+            "Set PIPELINE_ONLY_MODE=false (env var) to temporarily re-enable execute_skill "
+            "— useful on environments that have not yet been migrated off legacy skills."
+        ),
+    )
     # ── Ollama / OpenAI-compatible settings (used when LLM_PROVIDER=ollama) ──
     OLLAMA_BASE_URL: str = Field(
         default="http://localhost:11434/v1",

@@ -40,6 +40,10 @@ from app.routers.actions_router import router as actions_router
 from app.routers.auto_patrols import router as auto_patrols_router
 # v2.0 Diagnostic Rules
 from app.routers.diagnostic_rules import router as diagnostic_rules_router
+# Phase 1 — Pipeline Builder (Glass Box)
+from app.routers.pipeline_builder_router import router as pipeline_builder_router
+# Phase 3 — Agent Builder (Glass Box Agent via SSE)
+from app.routers.agent_builder_router import router as agent_builder_router
 
 __all__ = [
     "auth_router",
@@ -70,4 +74,6 @@ __all__ = [
     "actions_router",
     "auto_patrols_router",
     "diagnostic_rules_router",
+    "pipeline_builder_router",
+    "agent_builder_router",
 ]

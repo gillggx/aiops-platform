@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Topbar } from "@/components/layout/Topbar";
-import { AICopilot } from "@/components/copilot/AICopilot";
+import { AIAgentPanel } from "@/components/copilot/AIAgentPanel";
 import { AnalysisPanel } from "@/components/layout/AnalysisPanel";
 import type { AIOpsReportContract } from "aiops-contract";
 
@@ -552,7 +552,7 @@ export default function LotsPage() {
 
         {/* ── Right: AI Co-Pilot ── */}
         <aside style={{ width: 360, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <AICopilot
+          <AIAgentPanel
             triggerMessage={triggerMessage}
             onTriggerConsumed={() => setTriggerMessage(null)}
             contextEquipment={selectedLot ? selectedLot.lot_id : null}

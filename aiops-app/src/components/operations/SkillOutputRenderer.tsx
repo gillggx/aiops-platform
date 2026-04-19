@@ -48,14 +48,28 @@ export type SkillFindings = {
   impacted_lots?: string[];
 };
 
-/** Chart DSL produced by backend ChartMiddleware. */
+/** Chart DSL produced by backend ChartMiddleware + pipeline-builder block_chart. */
 export type ChartDSL = {
-  type: "line" | "bar" | "scatter";
+  type: "line" | "bar" | "scatter" | "boxplot" | "heatmap" | "distribution";
   title: string;
   data: Record<string, unknown>[];
   x: string;
   y: string[];
-  rules?: { value: number; label: string; style?: "danger" | "warning" | "center" }[];
+  /** Secondary-axis series (dual Y); v3.3 multi-y support. */
+  y_secondary?: string[];
+  /** For heatmap: which record field holds the cell value (colour). */
+  value_key?: string;
+  /** For distribution: fitted normal PDF points (scaled to bar height). */
+  pdf_data?: { x: number; y: number }[];
+  /** For distribution: summary stats shown in top-right annotation. */
+  stats?: { mu: number; sigma: number; n: number; skewness: number };
+  rules?: {
+    value: number;
+    label: string;
+    style?: "danger" | "warning" | "center" | "sigma";
+    /** Optional per-rule colour override (used by sigma zones). */
+    color?: string;
+  }[];
   highlight?: { field: string; eq: unknown } | null;
 };
 
@@ -399,27 +413,63 @@ const RULE_COLOR: Record<string, string> = {
 };
 
 export function ChartDSLRenderer({ chart }: { chart: ChartDSL }): React.ReactElement {
+  if (chart.data.length === 0) {
+    return (
+      <div style={{ padding: 12, color: "#a0aec0", fontSize: 12, background: "#f7f8fc", borderRadius: 8 }}>
+        {chart.title} — （無資料）
+      </div>
+    );
+  }
+
+  // Dispatch by chart type
+  if (chart.type === "boxplot") return renderBoxplot(chart);
+  if (chart.type === "heatmap") return renderHeatmap(chart);
+  if (chart.type === "distribution") return renderDistribution(chart);
+  return renderLineBarScatter(chart);
+}
+
+// ── Line / Bar / Scatter (+ multi-y / dual-axis / SPC rules / highlight) ─────
+function renderLineBarScatter(chart: ChartDSL): React.ReactElement {
+  const primaryY = chart.y ?? [];
+  const secondaryY = chart.y_secondary ?? [];
   const xs = chart.data.map((r, i) => r[chart.x] ?? i);
-  const yKey = chart.y[0] ?? "value";
-  const ys = chart.data.map(r => r[yKey]);
+  const plotType = chart.type === "bar" ? "bar" : "scatter";
+  const mode = chart.type === "scatter" ? "markers" : "lines+markers";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const traces: any[] = [
-    {
-      x: xs,
-      y: ys,
-      name: yKey,
-      type: chart.type === "bar" ? "bar" : "scatter",
-      mode: chart.type === "scatter" ? "markers" : "lines+markers",
-      line: chart.type === "line" ? { color: "#48bb78", width: 2 } : undefined,
-      marker: { color: "#48bb78", size: 5 },
-    },
-  ];
+  const traces: any[] = [];
 
-  // Highlight points (e.g. OOC)
-  if (chart.highlight?.field) {
+  primaryY.forEach((yKey, idx) => {
+    const color = SERIES_COLORS[idx % SERIES_COLORS.length];
+    traces.push({
+      x: xs,
+      y: chart.data.map(r => r[yKey]),
+      name: yKey,
+      type: plotType,
+      mode: plotType === "bar" ? undefined : mode,
+      line: chart.type === "line" ? { color, width: 2 } : undefined,
+      marker: { color, size: 5 },
+    });
+  });
+  secondaryY.forEach((yKey, idx) => {
+    const color = SERIES_COLORS[(primaryY.length + idx) % SERIES_COLORS.length];
+    traces.push({
+      x: xs,
+      y: chart.data.map(r => r[yKey]),
+      name: `${yKey} (r)`,
+      type: plotType,
+      mode: plotType === "bar" ? undefined : mode,
+      yaxis: "y2",
+      line: chart.type === "line" ? { color, width: 2, dash: "dot" } : undefined,
+      marker: { color, size: 5 },
+    });
+  });
+
+  // Highlight (OOC)
+  if (chart.highlight?.field && primaryY.length > 0) {
     const hlField = chart.highlight.field;
     const hlEq = chart.highlight.eq;
+    const yKey = primaryY[0];
     const hlRows = chart.data.filter(r => r[hlField] === hlEq);
     if (hlRows.length > 0) {
       traces.push({
@@ -433,29 +483,59 @@ export function ChartDSLRenderer({ chart }: { chart: ChartDSL }): React.ReactEle
     }
   }
 
-  // Convert rules → plotly horizontal lines (shapes)
+  // Control lines + labels
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const shapes: any[] = (chart.rules ?? []).map(rule => ({
-    type: "line",
-    xref: "paper", x0: 0, x1: 1,
-    yref: "y", y0: rule.value, y1: rule.value,
-    line: { color: RULE_COLOR[rule.style ?? "center"] ?? "#a0aec0", width: 1.5, dash: rule.style === "center" ? "dot" : "dash" },
-  }));
+  const shapes: any[] = (chart.rules ?? []).map(rule => {
+    const color = rule.color ?? RULE_COLOR[rule.style ?? "center"] ?? "#a0aec0";
+    const isSigma = rule.style === "sigma";
+    return {
+      type: "line",
+      xref: "paper", x0: 0, x1: 1,
+      yref: "y", y0: rule.value, y1: rule.value,
+      line: {
+        color,
+        width: isSigma ? 1 : 1.5,
+        dash: rule.style === "center" ? "dot" : (isSigma ? "dashdot" : "dash"),
+      },
+    };
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const annotations: any[] = (chart.rules ?? []).map(rule => ({
-    xref: "paper", yref: "y",
-    x: 1, y: rule.value, xanchor: "right", yanchor: "bottom",
-    text: `${rule.label} ${rule.value}`,
-    font: { size: 10, color: RULE_COLOR[rule.style ?? "center"] ?? "#a0aec0" },
-    showarrow: false,
-  }));
+  const annotations: any[] = (chart.rules ?? []).map(rule => {
+    const color = rule.color ?? RULE_COLOR[rule.style ?? "center"] ?? "#a0aec0";
+    return {
+      xref: "paper", yref: "y",
+      x: 1, y: rule.value, xanchor: "right", yanchor: "bottom",
+      text: `${rule.label} ${rule.value.toFixed(2)}`,
+      font: { size: 10, color },
+      showarrow: false,
+    };
+  });
 
-  if (chart.data.length === 0) {
-    return (
-      <div style={{ padding: 12, color: "#a0aec0", fontSize: 12, background: "#f7f8fc", borderRadius: 8 }}>
-        {chart.title} — （無資料）
-      </div>
-    );
+  const yAxisTitle = primaryY.length === 1 ? primaryY[0] : primaryY.join(", ");
+  const showLegend = primaryY.length > 1 || secondaryY.length > 0;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const layout: any = {
+    autosize: true,
+    height: 260,
+    margin: { l: 50, r: secondaryY.length > 0 ? 60 : 80, t: 12, b: 48 },
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "#f7f8fc",
+    font: { family: "Inter, sans-serif", size: 11 },
+    showlegend: showLegend,
+    legend: { orientation: "h", y: -0.25 },
+    xaxis: { gridcolor: "#e2e8f0", title: chart.x },
+    yaxis: { gridcolor: "#e2e8f0", title: yAxisTitle },
+    shapes,
+    annotations,
+  };
+  if (secondaryY.length > 0) {
+    layout.yaxis2 = {
+      gridcolor: "transparent",
+      title: secondaryY.join(", "),
+      overlaying: "y",
+      side: "right",
+    };
   }
 
   return (
@@ -466,18 +546,228 @@ export function ChartDSLRenderer({ chart }: { chart: ChartDSL }): React.ReactEle
       <Plot
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         data={traces as any}
+        layout={layout}
+        config={{ responsive: true, displayModeBar: false }}
+        style={{ width: "100%" }}
+        useResizeHandler
+      />
+    </div>
+  );
+}
+
+// ── Boxplot (group_by x / value y) ───────────────────────────────────────────
+function renderBoxplot(chart: ChartDSL): React.ReactElement {
+  const yKey = chart.y[0] ?? "value";
+  // If chart.x is the pseudo "_all" (no group), drop it to fold into one box.
+  const useGroups = chart.x !== "_all";
+  const xs = useGroups ? chart.data.map(r => r[chart.x]) : undefined;
+  const ys = chart.data.map(r => r[yKey]);
+
+  return (
+    <div style={{ background: "#f7f8fc", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
+      <div style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0" }}>
+        {chart.title}
+      </div>
+      <Plot
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data={[{
+          type: "box",
+          y: ys,
+          x: xs,
+          name: yKey,
+          boxpoints: "outliers",
+          marker: { color: "#4299e1" },
+          line: { color: "#2b6cb0" },
+        }] as any}
         layout={{
           autosize: true,
-          height: 240,
-          margin: { l: 50, r: 80, t: 12, b: 48 },
+          height: 280,
+          margin: { l: 50, r: 30, t: 12, b: 60 },
           paper_bgcolor: "transparent",
           plot_bgcolor: "#f7f8fc",
           font: { family: "Inter, sans-serif", size: 11 },
           showlegend: false,
-          xaxis: { gridcolor: "#e2e8f0", title: chart.x },
+          xaxis: { gridcolor: "#e2e8f0", title: useGroups ? chart.x : "" },
           yaxis: { gridcolor: "#e2e8f0", title: yKey },
+        }}
+        config={{ responsive: true, displayModeBar: false }}
+        style={{ width: "100%" }}
+        useResizeHandler
+      />
+    </div>
+  );
+}
+
+// ── Distribution (histogram bars + normal PDF curve + σ / USL / LSL lines) ───
+function renderDistribution(chart: ChartDSL): React.ReactElement {
+  const xs = chart.data.map(r => r["bin_center"]);
+  const ys = chart.data.map(r => r["count"]);
+  const barWidths = chart.data.map(r => {
+    const l = r["bin_left"] as number | undefined;
+    const ri = r["bin_right"] as number | undefined;
+    return l != null && ri != null ? ri - l : undefined;
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const traces: any[] = [
+    {
+      type: "bar",
+      x: xs,
+      y: ys,
+      width: barWidths,
+      marker: { color: "#4299e1", line: { color: "#2b6cb0", width: 0.5 } },
+      name: "count",
+      hovertemplate: "bin %{x:.2f}<br>count %{y}<extra></extra>",
+    },
+  ];
+  if (chart.pdf_data && chart.pdf_data.length > 0) {
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: chart.pdf_data.map(p => p.x),
+      y: chart.pdf_data.map(p => p.y),
+      line: { color: "#4a5568", width: 2, dash: "solid" },
+      name: "normal fit",
+      hovertemplate: "x=%{x:.2f}<br>pdf=%{y:.2f}<extra></extra>",
+    });
+  }
+
+  // σ / center / USL / LSL as vertical shapes (xref=x, yref=paper)
+  // Use the exact same structure as horizontal rules but rotated.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const shapes: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const annotations: any[] = [];
+  for (const rule of chart.rules ?? []) {
+    const color = rule.color ?? RULE_COLOR[rule.style ?? "center"] ?? "#a0aec0";
+    const isSigma = rule.style === "sigma";
+    const isCenter = rule.style === "center";
+    shapes.push({
+      type: "line",
+      xref: "x", x0: rule.value, x1: rule.value,
+      yref: "paper", y0: 0, y1: 1,
+      line: {
+        color,
+        width: isCenter ? 2 : (isSigma ? 1 : 1.5),
+        dash: isCenter ? "solid" : (isSigma ? "dashdot" : "dash"),
+      },
+    });
+    // Faint shaded bands for ±1σ / ±2σ / ±3σ pairs — applied later via stats
+    annotations.push({
+      xref: "x", yref: "paper",
+      x: rule.value, y: 1, xanchor: "center", yanchor: "bottom",
+      text: rule.label,
+      font: { size: 10, color },
+      showarrow: false,
+    });
+  }
+
+  // Optional σ zone shaded bands (light background between ±1σ, ±2σ, ±3σ).
+  if (chart.stats && chart.stats.sigma > 0) {
+    const { mu, sigma } = chart.stats;
+    const bandColors: Record<number, string> = { 1: "rgba(34,197,94,0.08)", 2: "rgba(234,179,8,0.06)", 3: "rgba(239,68,68,0.05)" };
+    for (const k of [1, 2, 3]) {
+      const inner = chart.rules?.some(r => r.style === "sigma" && Math.abs(Math.abs(r.value - mu) - k * sigma) < 1e-6);
+      if (!inner) continue;
+      shapes.push({
+        type: "rect",
+        xref: "x", x0: mu - k * sigma, x1: mu + k * sigma,
+        yref: "paper", y0: 0, y1: 1,
+        fillcolor: bandColors[k],
+        line: { width: 0 },
+        layer: "below",
+      });
+    }
+  }
+
+  const statsText = chart.stats
+    ? `μ=${chart.stats.mu.toFixed(3)}   σ=${chart.stats.sigma.toFixed(3)}   n=${chart.stats.n}   skew=${chart.stats.skewness.toFixed(2)}`
+    : "";
+
+  return (
+    <div style={{ background: "#f7f8fc", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
+      <div style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", gap: 12 }}>
+        <span>{chart.title}</span>
+        {statsText && (
+          <span style={{ fontSize: 10, color: "#718096", fontWeight: 400, fontFamily: "ui-monospace, monospace" }}>
+            {statsText}
+          </span>
+        )}
+      </div>
+      <Plot
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data={traces as any}
+        layout={{
+          autosize: true,
+          height: 320,
+          margin: { l: 50, r: 40, t: 24, b: 48 },
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "#f7f8fc",
+          font: { family: "Inter, sans-serif", size: 11 },
+          showlegend: false,
+          bargap: 0.05,
+          xaxis: { gridcolor: "#e2e8f0", title: chart.x, zeroline: false },
+          yaxis: { gridcolor: "#e2e8f0", title: "count" },
           shapes,
           annotations,
+        }}
+        config={{ responsive: true, displayModeBar: false }}
+        style={{ width: "100%" }}
+        useResizeHandler
+      />
+    </div>
+  );
+}
+
+// ── Heatmap (x / y / value_key) ──────────────────────────────────────────────
+function renderHeatmap(chart: ChartDSL): React.ReactElement {
+  const xKey = chart.x;
+  const yKey = chart.y[0] ?? "y";
+  const zKey = chart.value_key ?? "value";
+
+  // Collect unique x/y labels (preserve first-seen order)
+  const xLabels: string[] = [];
+  const yLabels: string[] = [];
+  for (const r of chart.data) {
+    const xv = String(r[xKey]);
+    const yv = String(r[yKey]);
+    if (!xLabels.includes(xv)) xLabels.push(xv);
+    if (!yLabels.includes(yv)) yLabels.push(yv);
+  }
+  // Build z matrix [y][x]
+  const z: (number | null)[][] = yLabels.map(() => xLabels.map(() => null));
+  for (const r of chart.data) {
+    const xi = xLabels.indexOf(String(r[xKey]));
+    const yi = yLabels.indexOf(String(r[yKey]));
+    const v = r[zKey];
+    if (xi >= 0 && yi >= 0 && typeof v === "number") z[yi][xi] = v;
+  }
+
+  return (
+    <div style={{ background: "#f7f8fc", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
+      <div style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "#4a5568", borderBottom: "1px solid #e2e8f0" }}>
+        {chart.title}
+      </div>
+      <Plot
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data={[{
+          type: "heatmap",
+          x: xLabels,
+          y: yLabels,
+          z,
+          colorscale: "RdBu",
+          zmid: 0,
+          hovertemplate: `${xKey}: %{x}<br>${yKey}: %{y}<br>${zKey}: %{z:.3f}<extra></extra>`,
+        }] as any}
+        layout={{
+          autosize: true,
+          height: Math.max(260, 30 * yLabels.length + 80),
+          margin: { l: 100, r: 40, t: 12, b: 60 },
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "#f7f8fc",
+          font: { family: "Inter, sans-serif", size: 11 },
+          xaxis: { title: xKey, side: "bottom", automargin: true },
+          yaxis: { title: yKey, automargin: true },
         }}
         config={{ responsive: true, displayModeBar: false }}
         style={{ width: "100%" }}

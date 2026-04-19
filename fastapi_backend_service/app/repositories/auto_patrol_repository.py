@@ -54,10 +54,12 @@ class AutoPatrolRepository:
     async def create(self, data: Dict[str, Any]) -> AutoPatrolModel:
         target_scope = data.pop("target_scope", {"type": "event_driven"})
         notify_config = data.pop("notify_config", None)
+        input_binding = data.pop("input_binding", None)  # Phase 4-B
         obj = AutoPatrolModel(
             **data,
             target_scope=json.dumps(target_scope, ensure_ascii=False),
             notify_config=json.dumps(notify_config, ensure_ascii=False) if notify_config else None,
+            input_binding=json.dumps(input_binding, ensure_ascii=False) if input_binding else None,
         )
         self._db.add(obj)
         await self._db.commit()
@@ -73,6 +75,9 @@ class AutoPatrolRepository:
         if "notify_config" in data:
             nc = data["notify_config"]
             data["notify_config"] = json.dumps(nc, ensure_ascii=False) if nc is not None else None
+        if "input_binding" in data:
+            ib = data["input_binding"]
+            data["input_binding"] = json.dumps(ib, ensure_ascii=False) if ib is not None else None
         for k, v in data.items():
             setattr(obj, k, v)
         await self._db.commit()
@@ -97,6 +102,13 @@ class AutoPatrolRepository:
             return None
         return _j(obj.notify_config)
 
+    def get_input_binding(self, obj: AutoPatrolModel) -> Optional[Dict[str, Any]]:
+        """Phase 4-B: parse input_binding JSON into dict. Returns None if unset."""
+        raw = getattr(obj, "input_binding", None)
+        if not raw:
+            return None
+        return _j(raw)
+
     def to_response_dict(self, obj: AutoPatrolModel) -> Dict[str, Any]:
         return {
             "id": obj.id,
@@ -104,6 +116,8 @@ class AutoPatrolRepository:
             "description": obj.description,
             "auto_check_description": obj.auto_check_description or "",
             "skill_id": obj.skill_id,
+            "pipeline_id": getattr(obj, "pipeline_id", None),
+            "input_binding": self.get_input_binding(obj),
             "trigger_mode": obj.trigger_mode,
             "event_type_id": obj.event_type_id,
             "cron_expr": obj.cron_expr,

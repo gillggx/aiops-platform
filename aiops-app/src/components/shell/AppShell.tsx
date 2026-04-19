@@ -1,16 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 // Resizable panel via native CSS resize
 import { Topbar } from "@/components/layout/Topbar";
-import { AICopilot } from "@/components/copilot/AICopilot";
+import { AIAgentPanel } from "@/components/copilot/AIAgentPanel";
 import { AnalysisPanel } from "@/components/layout/AnalysisPanel";
 import { DataExplorerPanel } from "@/components/layout/DataExplorerPanel";
 import { AppProvider, useAppContext } from "@/context/AppContext";
 import type { DataExplorerState } from "@/context/AppContext";
 import type { AIOpsReportContract } from "aiops-contract";
+
+// Live Glass Box overlay — empty canvas that operations stream into.
+const LiveCanvasOverlay = dynamic(
+  () => import("@/components/copilot/LiveCanvasOverlay"),
+  { ssr: false },
+);
+
+interface GlassEvent {
+  kind: "start" | "op" | "chat" | "error" | "done";
+  sessionId?: string;
+  goal?: string;
+  op?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  content?: string;
+  message?: string;
+  status?: string;
+  summary?: string;
+  pipeline_json?: unknown;
+}
 
 // ── Navigation structure ──────────────────────────────────────────────────────
 
@@ -20,9 +41,17 @@ const OPS_ITEMS = [
 ];
 
 const KNOWLEDGE_ITEMS = [
-  { href: "/admin/auto-patrols", label: "Auto-Patrols",     icon: "🔍" },
-  { href: "/admin/skills",       label: "Diagnostic Rules", icon: "🔧" },
-  { href: "/admin/my-skills",    label: "My Skills",        icon: "⭐" },
+  { href: "/admin/pipeline-builder",  label: "Pipeline Builder",       icon: "🧩" },
+  { href: "/admin/published-skills",  label: "Published Skills",       icon: "📘" },
+  { href: "/admin/auto-patrols",      label: "Auto-Patrols",           icon: "🔍" },
+  { href: "/admin/auto-check-rules",  label: "Auto-Check Rules",       icon: "⚡" },
+];
+
+// PR-4E: legacy items demoted below a divider. Still reachable for migration
+// work but visually separated so users know these are frozen.
+const LEGACY_ITEMS = [
+  { href: "/admin/skills",    label: "Legacy Diagnostic Rules", icon: "🔧" },
+  { href: "/admin/my-skills", label: "Legacy Skills",           icon: "⭐" },
 ];
 
 const ADMIN_ITEMS = [
@@ -120,6 +149,12 @@ function ContextualSidebar() {
             active={isExact(href)} collapsed={collapsed} />
         ))}
 
+        <SidebarSection title="Legacy (Frozen)" collapsed={collapsed} />
+        {LEGACY_ITEMS.map(({ href, label, icon }) => (
+          <NavLink key={href} href={href} icon={icon} label={label}
+            active={isExact(href)} collapsed={collapsed} />
+        ))}
+
         <SidebarSection title="Admin" collapsed={collapsed} />
         {ADMIN_ITEMS.map(({ href, label, icon }) => (
           <NavLink key={href} href={href} icon={icon} label={label}
@@ -140,7 +175,27 @@ function Shell({ children }: { children: React.ReactNode }) {
     selectedEquipment,
     dataExplorer, setDataExplorer,
   } = useAppContext();
+  // Phase 5-UX-5: right-side AI Agent is the sole entry (Topbar reverted).
+  // Open by default so users see the chat prompt immediately.
   const [copilotOpen, setCopilotOpen] = useState(true);
+  // Phase 5-UX-6: Live Glass Box overlay.
+  // When chat agent calls build_pipeline_live, the first pb_glass_start event
+  // opens this overlay with an empty canvas; subsequent pb_glass_op events
+  // stream into it (node-by-node), and pb_glass_done closes off the build.
+  const [glassOverlay, setGlassOverlay] = useState<{
+    sessionId: string;
+    goal?: string;
+    active: boolean;
+  } | null>(null);
+  // Live stream of glass events consumed by LiveCanvasOverlay. Stored in a ref
+  // + mirrored to state so the overlay can re-render on each event.
+  const [glassEvents, setGlassEvents] = useState<GlassEvent[]>([]);
+  const glassEventsRef = useRef<GlassEvent[]>([]);
+
+  const pushGlassEvent = (e: GlassEvent) => {
+    glassEventsRef.current = [...glassEventsRef.current, e];
+    setGlassEvents(glassEventsRef.current);
+  };
 
   function handleContract(c: AIOpsReportContract) {
     setContract(c);
@@ -200,11 +255,11 @@ function Shell({ children }: { children: React.ReactNode }) {
             writingMode: "vertical-rl", fontSize: 11, fontWeight: 600,
             color: copilotOpen ? "#a0aec0" : "#2b6cb0", letterSpacing: "1px",
           }}>
-            AI Copilot
+            AI Agent
           </span>
         </div>
 
-        {/* Copilot panel (collapsible) */}
+        {/* AI Agent panel (collapsible) */}
         {copilotOpen && (
           <aside style={{
             width: 380, minWidth: 280, maxWidth: "50vw", flexShrink: 0,
@@ -213,18 +268,56 @@ function Shell({ children }: { children: React.ReactNode }) {
             resize: "horizontal", direction: "rtl",
           }}>
             <div style={{ direction: "ltr", display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-              <AICopilot
+              <AIAgentPanel
                 onContract={handleContract}
                 onDataExplorer={handleDataExplorer}
                 triggerMessage={triggerMessage}
                 onTriggerConsumed={() => setTriggerMessage(null)}
                 contextEquipment={selectedEquipment?.name ?? null}
                 onHandoff={handleHandoff}
+                // Phase 5-UX-6: Glass Box event wiring — chat agent streams
+                // its sub-agent's operations here; AppShell mounts the live
+                // canvas overlay so the user watches node-by-node build.
+                onGlassStart={(ev) => {
+                  glassEventsRef.current = [];
+                  setGlassEvents([]);
+                  setGlassOverlay({ sessionId: ev.session_id, goal: ev.goal, active: true });
+                  pushGlassEvent({ kind: "start", sessionId: ev.session_id, goal: ev.goal });
+                }}
+                onGlassOp={(ev) => pushGlassEvent({
+                  kind: "op",
+                  op: ev.op,
+                  args: ev.args,
+                  result: ev.result,
+                })}
+                onGlassChat={(ev) => pushGlassEvent({ kind: "chat", content: ev.content })}
+                onGlassError={(ev) => pushGlassEvent({ kind: "error", message: ev.message })}
+                onGlassDone={(ev) => {
+                  pushGlassEvent({
+                    kind: "done",
+                    status: ev.status,
+                    summary: ev.summary,
+                    pipeline_json: ev.pipeline_json,
+                  });
+                  setGlassOverlay((prev) => prev ? { ...prev, active: false } : null);
+                }}
               />
             </div>
           </aside>
         )}
       </div>
+
+      {/* Phase 5-UX-6: Live Glass Box canvas overlay. Auto-opens when chat
+          agent starts build_pipeline_live. Operations stream in real-time. */}
+      {glassOverlay && (
+        <LiveCanvasOverlay
+          sessionId={glassOverlay.sessionId}
+          goal={glassOverlay.goal}
+          active={glassOverlay.active}
+          events={glassEvents}
+          onClose={() => setGlassOverlay(null)}
+        />
+      )}
     </div>
   );
 }

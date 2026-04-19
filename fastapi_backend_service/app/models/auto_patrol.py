@@ -23,9 +23,17 @@ class AutoPatrolModel(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-    skill_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("skill_definitions.id", ondelete="CASCADE"), nullable=False, index=True
+    # Execution binding — Phase 4-B: either `skill_id` (legacy) OR `pipeline_id` (new).
+    # skill_id becomes nullable; migration scripts convert legacy patrols incrementally.
+    skill_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("skill_definitions.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    pipeline_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("pb_pipelines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # JSON dict mapping pipeline input name → literal or `$event.xxx` / `$context.xxx` ref.
+    # Example: {"tool_id": "$event.toolID", "ooc_count": 3}
+    input_binding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # "event" | "schedule"
     trigger_mode: Mapped[str] = mapped_column(

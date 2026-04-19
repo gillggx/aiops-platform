@@ -50,6 +50,9 @@ class AutoPatrolCreate(BaseModel):
     steps_mapping: List[Dict[str, Any]] = Field(default_factory=list)
     input_schema: List[Dict[str, Any]] = Field(default_factory=list)
     output_schema: List[Dict[str, Any]] = Field(default_factory=list)
+    # Phase 4-B: alternative to embedded skill — bind directly to a pipeline
+    pipeline_id: Optional[int] = None
+    input_binding: Optional[Dict[str, Any]] = None
 
 
 class AutoPatrolUpdate(BaseModel):
@@ -69,6 +72,9 @@ class AutoPatrolUpdate(BaseModel):
     steps_mapping: Optional[List[Dict[str, Any]]] = None
     input_schema: Optional[List[Dict[str, Any]]] = None
     output_schema: Optional[List[Dict[str, Any]]] = None
+    # Phase 4-B
+    pipeline_id: Optional[int] = None
+    input_binding: Optional[Dict[str, Any]] = None
 
 
 class AutoPatrolResponse(BaseModel):
@@ -76,7 +82,10 @@ class AutoPatrolResponse(BaseModel):
     name: str
     description: str
     auto_check_description: str = ""
-    skill_id: int
+    # Phase 4-B: either skill_id (legacy) OR pipeline_id (new)
+    skill_id: Optional[int] = None
+    pipeline_id: Optional[int] = None
+    input_binding: Optional[Dict[str, Any]] = None
     trigger_mode: str
     event_type_id: Optional[int]
     cron_expr: Optional[str]
@@ -104,7 +113,9 @@ class AutoPatrolTriggerRequest(BaseModel):
 class AutoPatrolTriggerResponse(BaseModel):
     patrol_id: int
     patrol_name: str
-    skill_id: int
+    # Phase 4-B: skill_id nullable — pipeline-based patrols use pipeline_id instead
+    skill_id: Optional[int] = None
+    pipeline_id: Optional[int] = None
     condition_met: bool
     alarm_created: bool
     alarm_id: Optional[int] = None

@@ -1,0 +1,929 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  createPipeline,
+  deprecatePipeline,
+  executePipeline,
+  forkPipeline,
+  getPipeline,
+  listBlocks,
+  promotePipeline,
+  transitionPipeline,
+  updatePipeline,
+  validatePipeline,
+} from "@/lib/pipeline-builder/api";
+import type { PipelineStatus } from "@/lib/pipeline-builder/types";
+import { BuilderProvider, useBuilder, useBuilderKeybindings } from "@/context/pipeline-builder/BuilderContext";
+import type {
+  BlockSpec,
+  ExecuteResponse,
+  PipelineJSON,
+  PipelineRecord,
+  ValidationErrorItem,
+} from "@/lib/pipeline-builder/types";
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
+import BlockLibrary from "./BlockLibrary";
+import DagCanvas from "./DagCanvas";
+import NodeInspector from "./NodeInspector";
+import EdgeInspector from "./EdgeInspector";
+import DataPreviewPanel from "./DataPreviewPanel";
+import StatusBadge from "./StatusBadge";
+import ValidationDrawer from "./ValidationDrawer";
+// Phase 5-UX-3b: Old Builder-specific AgentPanel removed. Users now talk to
+// the unified AI Agent via a /chat/[id] tab (opened from Topbar search bar or
+// the "Ask Agent" button below, which redirects to /chat/new?prompt=...).
+import PipelineResultsPanel from "./PipelineResultsPanel";
+import PipelineInputsPanel from "./PipelineInputsPanel";
+import PipelineRunDialog from "./PipelineRunDialog";
+import PipelineInfoModal from "./PipelineInfoModal";
+import PublishReviewModal from "./PublishReviewModal";
+import AutoCheckPublishModal from "./AutoCheckPublishModal";
+import PipelineThemeStyles from "./PipelineThemeStyles";
+import { blockDisplayName } from "@/lib/pipeline-builder/style";
+// Phase 5-UX-5: right-side Agent|Parameters|Runs tab panel.
+import RightTabbedPanel from "./RightTabbedPanel";
+// Phase 5-UX-5 fix: restore Glass Box Agent (iterative node-by-node build).
+// The unified AIAgentPanel was one-shot (build_pipeline in a single tool call);
+// user wants to watch the agent pull nodes onto the canvas step by step.
+import AgentBuilderPanel from "./AgentBuilderPanel";
+
+interface Props {
+  // Phase 5-UX-3b: "session" = /chat/[id] tab mode. Hosts AI Agent on the right
+  // side and hydrates canvas from session.last_pipeline_json. Hides publish/
+  // lifecycle controls (those belong in /admin/pipeline-builder).
+  mode: "new" | "edit" | "session";
+  pipelineId?: number;
+  /** PR-B: kind picked in the new-pipeline gate page; sent on first save. */
+  initialKind?: "auto_patrol" | "auto_check" | "skill";
+  /** Phase 5: ephemeral pipeline hydrated from chat's Edit-in-Builder handoff. */
+  initialPipelineJson?: PipelineJSON;
+  /** Phase 5-UX-3b: session id — required when mode="session". Pins the AI Agent
+   *  panel on the right to a specific conversation for history + continuity. */
+  sessionId?: string;
+  /** Phase 5-UX-3b: seed prompt auto-sent once when session mode mounts. */
+  initialPrompt?: string;
+}
+
+export default function BuilderLayout(props: Props) {
+  return (
+    <BuilderProvider>
+      <BuilderInner {...props} />
+    </BuilderProvider>
+  );
+}
+
+/** Phase 5-UX-6: variant that does NOT wrap its own BuilderProvider, so a
+ *  parent can control the canvas context (e.g. LiveCanvasOverlay wants to
+ *  apply agent operations to the SAME context the canvas renders). */
+export function BuilderLayoutNoProvider(props: Props) {
+  return <BuilderInner {...props} />;
+}
+
+function BuilderInner({ mode, pipelineId, initialKind, initialPipelineJson, sessionId, initialPrompt }: Props) {
+  const { state, actions, selectedNode, selectedEdge } = useBuilder();
+  useBuilderKeybindings();
+  const router = useRouter();
+
+  const [catalog, setCatalog] = useState<BlockSpec[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [runResult, setRunResult] = useState<ExecuteResponse | null>(null);
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<ValidationErrorItem[]>([]);
+  const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  // Phase 5-UX-5: focus state for Copilot — user's next chat message is about
+  // this node. Set via NodeInspector's "Ask Agent" button or right-click menu.
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  // Phase 5-UX-5 fix: lift right-panel tab state so the top-bar "Ask Agent"
+  // button + "Ask about this" from Inspector can programmatically switch tabs.
+  const [rightTab, setRightTab] = useState<"agent" | "parameters" | "runs">("agent");
+  const [resultsPanelOpen, setResultsPanelOpen] = useState(false);
+  const [inputsPanelOpen, setInputsPanelOpen] = useState(false);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [infoModalOpen, setInfoModalOpen] = useState(false);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
+  // Phase 5-UX-7: separate publish modal for auto_check (event binding)
+  const [autoCheckModalOpen, setAutoCheckModalOpen] = useState(false);
+  const [autoRun, setAutoRun] = useState(false);
+  const [toast, setToast] = useState<{ kind: "info" | "error" | "success"; text: string } | null>(null);
+  const [nameDraft, setNameDraft] = useState(state.pipeline.name);
+  const autoRunTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // PR-B: locked / active / archived are all read-only. Only draft + validating are editable.
+  const readOnly =
+    state.meta.status === "locked" ||
+    state.meta.status === "active" ||
+    state.meta.status === "archived";
+
+  // Load catalog + pipeline
+  useEffect(() => {
+    (async () => {
+      try {
+        const blocks = await listBlocks();
+        setCatalog(blocks);
+        if (mode === "edit" && pipelineId) {
+          const rec = await getPipeline(pipelineId);
+          actions.init(rec);
+          setNameDraft(rec.pipeline_json.name);
+        } else if (initialPipelineJson) {
+          // Phase 5: hydrate from chat's ephemeral pipeline — mark dirty so user can save
+          actions.init({ pipeline: initialPipelineJson });
+        } else {
+          actions.init({ pipeline: { version: "1.0", name: "新 Pipeline", nodes: [], edges: [], metadata: {} } });
+        }
+      } catch (e) {
+        setToast({ kind: "error", text: (e as Error).message });
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, pipelineId]);
+
+  useEffect(() => {
+    if (!loading) setNameDraft(state.pipeline.name);
+  }, [state.pipeline.name, loading]);
+
+  // Warn on unload if dirty
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (state.dirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [state.dirty]);
+
+  const showToast = (kind: "info" | "error" | "success", text: string) => {
+    setToast({ kind, text });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      if (state.meta.pipelineId == null) {
+        const rec = await createPipeline({
+          name: state.pipeline.name,
+          description: state.description,
+          pipeline_kind: initialKind ?? "skill",
+          pipeline_json: state.pipeline,
+        });
+        actions.init(rec);
+        actions.markSaved();
+        showToast("success", "已儲存為 Draft");
+        router.replace(`/admin/pipeline-builder/${rec.id}`);
+      } else {
+        const rec = await updatePipeline(state.meta.pipelineId, {
+          name: state.pipeline.name,
+          description: state.description,
+          pipeline_json: state.pipeline,
+        });
+        actions.init(rec);
+        actions.markSaved();
+        showToast("success", "已儲存");
+      }
+    } catch (e) {
+      showToast("error", `儲存失敗：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [state, actions, router]);
+
+  const handleValidate = useCallback(async () => {
+    try {
+      const res = await validatePipeline(state.pipeline);
+      setValidationErrors(res.errors);
+      setValidationOpen(true);
+    } catch (e) {
+      showToast("error", (e as Error).message);
+    }
+  }, [state.pipeline]);
+
+  const executeWithInputs = useCallback(async (providedInputs: Record<string, unknown>) => {
+    setRunResult(null);
+    try {
+      const res = await executePipeline(state.pipeline, providedInputs);
+      setRunResult(res);
+      if (res.node_results && Object.keys(res.node_results).length > 0) {
+        actions.mergeNodeResults(res.node_results);
+      }
+      if (res.status === "validation_error") {
+        setValidationErrors(res.errors ?? []);
+        setValidationOpen(true);
+        showToast("error", "Pipeline 驗證失敗");
+      } else if (res.status === "success") {
+        showToast("success", `執行成功（run_id=${res.run_id}）`);
+        if (res.result_summary) setResultsPanelOpen(true);
+      } else {
+        showToast("error", `執行失敗：${res.error_message ?? "unknown"}`);
+      }
+    } catch (e) {
+      showToast("error", (e as Error).message);
+    }
+  }, [state.pipeline, actions]);
+
+  const handleRun = useCallback(async () => {
+    // Phase 4-B0: if any required input lacks a default + example, open Run Dialog first
+    const declared = state.pipeline.inputs ?? [];
+    const needsPrompt = declared.some(
+      (i) => i.required && i.default === null && i.example === null,
+    ) || declared.some(
+      (i) => i.required && i.default === undefined && i.example === undefined,
+    );
+    if (declared.length > 0 && needsPrompt) {
+      setRunDialogOpen(true);
+      return;
+    }
+
+    // Otherwise silent run with defaults/examples
+    const silentInputs: Record<string, unknown> = {};
+    for (const inp of declared) {
+      if (inp.default != null) silentInputs[inp.name] = inp.default;
+      else if (inp.example != null) silentInputs[inp.name] = inp.example;
+    }
+    void executeWithInputs(silentInputs);
+  }, [state.pipeline.inputs, executeWithInputs]);
+
+  /** UX Fix Pack: Auto-run on change — debounce 1500ms after pipeline mutations.
+   *  Skips when autoRun is off, pipeline empty, readOnly, or pipeline has required
+   *  inputs (would prompt dialog, bad UX on every edit). */
+  useEffect(() => {
+    if (!autoRun) return;
+    if (readOnly) return;
+    if (state.pipeline.nodes.length === 0) return;
+    const hasRequiredInputs = (state.pipeline.inputs ?? []).some(
+      (i) => i.required && i.default == null && i.example == null,
+    );
+    if (hasRequiredInputs) return;
+    if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current);
+    autoRunTimerRef.current = setTimeout(() => {
+      void handleRun();
+    }, 1500);
+    return () => {
+      if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current);
+    };
+  }, [autoRun, readOnly, state.pipeline.nodes, state.pipeline.edges, state.pipeline.inputs, handleRun]);
+
+  // PR-B: unified lifecycle transition + back-compat helpers.
+  const handleTransition = useCallback(
+    async (to: PipelineStatus, confirmMsg?: string) => {
+      if (state.meta.pipelineId == null) {
+        showToast("error", "請先儲存 pipeline");
+        return;
+      }
+      if (state.dirty && to !== "draft") {
+        showToast("error", "請先儲存變更");
+        return;
+      }
+      if (confirmMsg && !confirm(confirmMsg)) return;
+      try {
+        await transitionPipeline(state.meta.pipelineId, to);
+        showToast("success", `狀態已更新為 ${to}`);
+        const rec = await getPipeline(state.meta.pipelineId);
+        actions.init(rec);
+      } catch (e) {
+        showToast("error", (e as Error).message);
+      }
+    },
+    [state.meta.pipelineId, state.dirty, actions],
+  );
+
+  const handleClone = useCallback(async () => {
+    if (state.meta.pipelineId == null) return;
+    try {
+      const cloned = await forkPipeline(state.meta.pipelineId);
+      showToast("success", "已 Clone 為新 Draft");
+      router.push(`/admin/pipeline-builder/${cloned.id}`);
+    } catch (e) {
+      showToast("error", (e as Error).message);
+    }
+  }, [state.meta.pipelineId, router]);
+
+  // Back-compat referenced elsewhere (not currently wired in UI)
+  const handleDeprecate = useCallback(async () => {
+    if (state.meta.pipelineId == null) return;
+    if (!confirm("封存後不可恢復（僅能 Clone 建立新版本），確定？")) return;
+    try {
+      await deprecatePipeline(state.meta.pipelineId);
+      showToast("success", "已封存");
+      const rec = await getPipeline(state.meta.pipelineId);
+      actions.init(rec);
+    } catch (e) {
+      showToast("error", (e as Error).message);
+    }
+  }, [state.meta.pipelineId, actions]);
+
+  const runStatuses = runResult
+    ? Object.fromEntries(
+        Object.entries(runResult.node_results).map(([k, v]) => [k, v.status])
+      )
+    : {};
+
+  if (loading) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", color: "#8c8c8c" }}>載入中...</div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="builder-root"
+      data-pb-theme={state.theme}
+      data-pb-density={state.density}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 100,
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--pb-canvas-bg)",
+        color: "var(--pb-text)",
+        fontFamily: "system-ui, -apple-system, 'Noto Sans TC', sans-serif",
+      }}
+    >
+      <PipelineThemeStyles />
+      {/* Header */}
+      <div
+        style={{
+          padding: "8px 18px",
+          background: "var(--pb-panel-bg)",
+          borderBottom: "1px solid var(--pb-panel-border)",
+          color: "var(--pb-text)",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          zIndex: 5,
+        }}
+      >
+        {mode !== "session" && (
+          <>
+            <button
+              onClick={() => router.push("/admin/pipeline-builder")}
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#4F46E5", padding: 0 }}
+            >
+              ← List
+            </button>
+            <span style={{ color: "#CBD5E1" }}>/</span>
+          </>
+        )}
+        {mode === "session" && (
+          <>
+            <span style={{ fontSize: 12, color: "#64748B" }}>💬 Session</span>
+            <span style={{ color: "#CBD5E1" }}>/</span>
+          </>
+        )}
+        <input
+          data-testid="pipeline-name-input"
+          type="text"
+          value={nameDraft}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={() => {
+            if (nameDraft && nameDraft !== state.pipeline.name) {
+              actions.renamePipeline(nameDraft);
+            }
+          }}
+          disabled={readOnly}
+          onFocus={(e) => (e.currentTarget.style.border = "1px solid #CBD5E1")}
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            color: "#0F172A",
+            border: "1px dashed #CBD5E1",
+            padding: "3px 6px",
+            borderRadius: 3,
+            outline: "none",
+            background: readOnly ? "#F1F5F9" : "#fff",
+            minWidth: 220,
+          }}
+          title="點擊編輯名稱；完整資訊點 ✏️ Info"
+        />
+        <button
+          data-testid="btn-info"
+          onClick={() => setInfoModalOpen(true)}
+          title="編輯 Pipeline 基本資訊（名稱、描述）"
+          style={{
+            background: "none",
+            border: "1px solid #CBD5E1",
+            cursor: "pointer",
+            fontSize: 12,
+            color: "#475569",
+            padding: "3px 8px",
+            borderRadius: 3,
+            lineHeight: 1.2,
+          }}
+        >
+          ✏️ Info
+        </button>
+        {state.dirty && (
+          <span style={{ fontSize: 10, color: "#D97706", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>
+            ● Unsaved
+          </span>
+        )}
+
+        {/* Status bar (STATUS / ACTIVE NODES / SELECTED) */}
+        <div
+          data-testid="status-bar"
+          style={{
+            marginLeft: 18,
+            display: "flex",
+            gap: 18,
+            fontSize: 10,
+            color: "#64748B",
+            letterSpacing: "0.05em",
+          }}
+        >
+          <StatusBarItem label="STATUS">
+            <StatusBadge status={state.meta.status} />
+          </StatusBarItem>
+          <StatusBarItem label="ACTIVE NODES">
+            <span data-testid="sb-active-nodes" style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>
+              {state.pipeline.nodes.length}
+            </span>
+          </StatusBarItem>
+          <StatusBarItem label="SELECTED">
+            <span data-testid="sb-selected" style={{ fontSize: 12, fontWeight: 500, color: "#0F172A" }}>
+              {selectedNode
+                ? (selectedNode.display_label ?? blockDisplayName(selectedNode.block_id))
+                : "—"}
+            </span>
+          </StatusBarItem>
+          {runResult?.result_summary && (
+            <StatusBarItem label="RESULT">
+              <span
+                data-testid="sb-pipeline-result"
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "2px 8px",
+                  borderRadius: 3,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  background: runResult.result_summary.triggered ? "#DCFCE7" : "#F1F5F9",
+                  color: runResult.result_summary.triggered ? "#166534" : "#64748B",
+                  border: `1px solid ${runResult.result_summary.triggered ? "#86EFAC" : "#CBD5E1"}`,
+                }}
+              >
+                {runResult.result_summary.triggered ? "✓ Triggered" : "✗ Not Triggered"}
+              </span>
+            </StatusBarItem>
+          )}
+        </div>
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          {/* PR-D1/D3 visual prefs */}
+          <button
+            data-testid="btn-theme"
+            onClick={() => actions.setTheme(state.theme === "dark" ? "light" : "dark")}
+            title={state.theme === "dark" ? "切到亮色" : "切到暗色"}
+            style={{
+              ...btn("ghost"),
+              fontSize: 14,
+              padding: "4px 8px",
+            }}
+          >
+            {state.theme === "dark" ? "☀" : "🌙"}
+          </button>
+          <button
+            data-testid="btn-density"
+            onClick={() => actions.setDensity(state.density === "full" ? "compact" : "full")}
+            title={state.density === "full" ? "切換成緊湊" : "切換成完整"}
+            style={{
+              ...btn("ghost"),
+              fontSize: 11,
+              padding: "4px 8px",
+              letterSpacing: "0.03em",
+              fontWeight: 600,
+            }}
+          >
+            {state.density === "full" ? "▤ Full" : "▢ Compact"}
+          </button>
+          <button data-testid="btn-undo" onClick={actions.undo} title="Undo (Cmd/Ctrl+Z)" style={btn("ghost", readOnly)}>
+            ↶
+          </button>
+          <button data-testid="btn-redo" onClick={actions.redo} title="Redo (Cmd/Ctrl+Y)" style={btn("ghost", readOnly)}>
+            ↷
+          </button>
+          {/* Phase 5-UX-6 fix: "Ask Agent" button removed — the Agent tab is
+              always present on the right, and NodeInspector's per-node "Ask
+              about this" already focuses it. Redundant top-bar entry. */}
+          <button
+            data-testid="btn-pipeline-inputs"
+            onClick={() => setInputsPanelOpen(true)}
+            style={{ ...btn("ghost"), color: "#3730A3", borderColor: "#C7D2FE" }}
+            title="宣告 pipeline 變數（讓 pipeline 可重用）"
+          >
+            🔣 Inputs ({state.pipeline.inputs?.length ?? 0})
+          </button>
+          <button data-testid="btn-validate" onClick={handleValidate} style={btn("ghost")}>
+            Validate
+          </button>
+          <label
+            data-testid="auto-run-toggle"
+            title="改動 pipeline 後延遲 1.5 秒自動執行（避免大 pipeline 卡頓時可關閉）"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              color: autoRun ? "#16A34A" : "#64748B",
+              cursor: readOnly ? "not-allowed" : "pointer",
+              padding: "3px 8px",
+              borderRadius: 3,
+              border: `1px solid ${autoRun ? "#86EFAC" : "#CBD5E1"}`,
+              background: autoRun ? "#F0FDF4" : "#fff",
+              opacity: readOnly ? 0.5 : 1,
+              fontWeight: 500,
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={autoRun}
+              onChange={(e) => setAutoRun(e.target.checked)}
+              disabled={readOnly}
+              style={{ margin: 0 }}
+            />
+            Auto
+          </label>
+          <button
+            data-testid="btn-run"
+            onClick={handleRun}
+            style={{ ...btn("primary"), background: "#16A34A", borderColor: "#16A34A" }}
+            title="執行整條 pipeline — 節點上會顯示每個 node 的 rows / error 徽章"
+          >
+            ▶ Run Full
+          </button>
+          {runResult?.result_summary && (
+            <button
+              data-testid="btn-pipeline-results"
+              onClick={() => setResultsPanelOpen(true)}
+              style={{ ...btn("ghost"), background: "#F0FDF4", color: "#166534", borderColor: "#BBF7D0", fontWeight: 600 }}
+              title="Show pipeline result summary + charts"
+            >
+              📊 Results
+            </button>
+          )}
+          {mode !== "session" && (
+            <button
+              data-testid="btn-save"
+              onClick={handleSave}
+              disabled={saving || readOnly}
+              style={btn(state.dirty ? "primary" : "ghost", saving || readOnly)}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          )}
+          {mode === "session" && (
+            <button
+              onClick={async () => {
+                // Phase 5-UX-3b: "Save as Skill" in session mode → persist as
+                // draft pipeline + open the real Builder so user can pick kind
+                // + publish via the lifecycle flow.
+                const name = window.prompt("儲存為 Pipeline（之後可在 Pipeline Builder 選 kind + 發佈）\n\n名稱：", state.pipeline.name || "session pipeline");
+                if (!name) return;
+                try {
+                  const rec = await createPipeline({
+                    name,
+                    description: `從對話 session 建立`,
+                    pipeline_json: state.pipeline,
+                  });
+                  window.open(`/admin/pipeline-builder/${rec.id}`, "_blank");
+                  showToast("success", `已建立 pipeline #${rec.id}`);
+                } catch (e) {
+                  showToast("error", `儲存失敗：${(e as Error).message}`);
+                }
+              }}
+              style={btn("primary")}
+              title="把這個 session 的 pipeline 存起來，稍後可發佈為 Skill"
+            >
+              📌 存為 Pipeline
+            </button>
+          )}
+
+          {/* PR-B lifecycle transition buttons — hidden in session mode (publish
+              lives in /admin/pipeline-builder). */}
+          {mode !== "session" && state.meta.status === "draft" && state.meta.pipelineId != null && (
+            <button
+              onClick={() => handleTransition("validating")}
+              style={btn("ghost")}
+              title="進入測試階段：驗證結構 + 用真實資料預覽"
+            >
+              → 開始測試
+            </button>
+          )}
+          {mode !== "session" && state.meta.status === "validating" && state.meta.pipelineId != null && (
+            <>
+              <button
+                onClick={() => handleTransition("locked")}
+                style={btn("primary")}
+                title="凍結 pipeline + LLM 產文件 + 準備上架"
+              >
+                → 準備上架
+              </button>
+              <button onClick={() => handleTransition("draft")} style={btn("ghost")}>
+                ← 退回 Draft
+              </button>
+            </>
+          )}
+          {mode !== "session" && state.meta.status === "locked" && state.meta.pipelineId != null && (
+            <>
+              {/* Phase 5-UX-7 publish routing by kind:
+                  skill      → Review Modal (writes pb_published_skills + → active)
+                  auto_check → AutoCheckTriggerModal (bind event_types + → active)
+                  auto_patrol → direct transition to active */}
+              <button
+                onClick={() => {
+                  const kind = state.meta.pipelineKind ?? initialKind;
+                  if (kind === "auto_check") {
+                    setAutoCheckModalOpen(true);
+                  } else if (kind === "skill" || kind === "diagnostic" || kind == null) {
+                    setPublishModalOpen(true);
+                  } else {
+                    void handleTransition("active", "確定發佈？");
+                  }
+                }}
+                style={btn("success")}
+                title="發佈：skill → Skill Registry；auto_check → 綁 alarm 事件；auto_patrol → 直接 active"
+              >
+                ✔ Publish
+              </button>
+              <button onClick={() => handleTransition("draft")} style={btn("ghost")}>
+                ← 退回 Draft
+              </button>
+            </>
+          )}
+          {state.meta.status === "active" && (
+            <>
+              <button onClick={handleClone} style={btn("ghost")} title="複製為可編輯的 Draft">
+                🧬 Clone & Edit
+              </button>
+              <button
+                onClick={() => handleTransition("archived", "封存後不可直接恢復（需 Clone），確定？")}
+                style={btn("danger")}
+              >
+                📦 Archive
+              </button>
+            </>
+          )}
+          {state.meta.status === "archived" && (
+            <button onClick={handleClone} style={btn("ghost")}>
+              🧬 Clone (新 Draft)
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Main body: vertical PanelGroup — top(BlockLib | Canvas | Inspector) / bottom(Preview) */}
+      {/* Phase 5-UX-3b session mode: AI Agent occupies a resizable right-side aside. */}
+      <div style={{ flex: 1, overflow: "hidden", minHeight: 0, display: "flex", flexDirection: "row" }}>
+        <div style={{ flex: 1, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
+        {previewCollapsed ? (
+          // Collapsed: top takes everything, bottom is a thin 28px strip
+          <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+              <BlockLibrary readOnly={readOnly} />
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <DagCanvas
+                  blockCatalog={catalog}
+                  readOnly={readOnly}
+                  runStatuses={runStatuses}
+                  onPortError={(msg) => showToast("error", msg)}
+                  onAgentPin={(nodeId) => {
+                    actions.select(nodeId);
+                    const node = state.pipeline.nodes.find((n) => n.id === nodeId);
+                    const label = node?.display_label ?? node?.block_id ?? nodeId;
+                    window.open(
+                      `/chat/new?prompt=${encodeURIComponent(`針對 ${label} (${nodeId}) 提問：`)}`,
+                      "_blank",
+                    );
+                  }}
+                />
+              </div>
+              {/* Phase 5-UX-5: NodeInspector / EdgeInspector moved into right
+                  tabbed panel (Parameters tab). */}
+            </div>
+            <DataPreviewPanel
+              collapsed
+              onToggle={() => setPreviewCollapsed((c) => !c)}
+            />
+          </div>
+        ) : (
+          <PanelGroup orientation="vertical" id="pb-preview-split" style={{ height: "100%" }}>
+            <Panel defaultSize="70%" minSize="30%">
+              <div style={{ height: "100%", display: "flex", overflow: "hidden" }}>
+                <BlockLibrary readOnly={readOnly} />
+                <div style={{ flex: 1, overflow: "hidden" }}>
+                  <DagCanvas
+                    blockCatalog={catalog}
+                    readOnly={readOnly}
+                    runStatuses={runStatuses}
+                    onPortError={(msg) => showToast("error", msg)}
+                  />
+                </div>
+                {/* Phase 5-UX-5: NodeInspector / EdgeInspector moved into right
+                    tabbed panel (Parameters tab). */}
+              </div>
+            </Panel>
+            <PanelResizeHandle
+              id="pb-preview-resizer"
+              style={{
+                height: 4,
+                background: "#E2E8F0",
+                cursor: "row-resize",
+                flexShrink: 0,
+              }}
+            >
+              <div
+                data-testid="preview-resize-handle"
+                style={{ height: "100%", width: "100%" }}
+              />
+            </PanelResizeHandle>
+            <Panel defaultSize="30%" minSize="15%" maxSize="70%">
+              <DataPreviewPanel
+                collapsed={false}
+                onToggle={() => setPreviewCollapsed((c) => !c)}
+                onColumnClick={(col) => {
+                  if (state.focusedColumnTarget && selectedNode) {
+                    actions.setParam(selectedNode.id, state.focusedColumnTarget, col);
+                    showToast("success", `已填入 ${state.focusedColumnTarget} = ${col}`);
+                  }
+                }}
+              />
+            </Panel>
+          </PanelGroup>
+        )}
+        </div>
+        {/* Phase 5-UX-5: right tabbed panel — Agent | Parameters | Runs.
+            Always present in session + edit + new modes. */}
+        <RightTabbedPanel
+          blockCatalog={catalog}
+          readOnly={readOnly}
+          runResult={runResult}
+          tab={rightTab}
+          setRightTab={setRightTab}
+          onAskAgent={(nodeId) => {
+            // Phase 5-UX-5: set focus + switch to Agent tab.
+            setFocusedNodeId(nodeId);
+            setRightTab("agent");
+          }}
+          agentPanel={
+            <AgentBuilderPanel
+              blockCatalog={catalog}
+              basePipelineId={state.meta.pipelineId ?? null}
+              focusedNodeId={focusedNodeId}
+              focusedNodeLabel={(() => {
+                if (!focusedNodeId) return null;
+                const node = state.pipeline.nodes.find((n) => n.id === focusedNodeId);
+                return node?.display_label ?? node?.block_id ?? focusedNodeId;
+              })()}
+              onClearFocus={() => setFocusedNodeId(null)}
+            />
+          }
+        />
+      </div>
+
+      {/* Validation drawer */}
+      <ValidationDrawer
+        open={validationOpen}
+        errors={validationErrors}
+        onClose={() => setValidationOpen(false)}
+      />
+
+      {/* UX Fix Pack: Pipeline Info modal (name + description) */}
+      <PipelineInfoModal
+        open={infoModalOpen}
+        onClose={() => setInfoModalOpen(false)}
+        readOnly={readOnly}
+      />
+
+      {/* PR-C: Publish Review Modal (skill kind) */}
+      <PublishReviewModal
+        open={publishModalOpen}
+        pipelineId={state.meta.pipelineId}
+        onClose={() => setPublishModalOpen(false)}
+        onPublished={(slug) => {
+          showToast("success", `已發佈為 Skill: ${slug}`);
+          // Reload pipeline to pick up new status=active
+          if (state.meta.pipelineId != null) {
+            getPipeline(state.meta.pipelineId).then((rec) => actions.init(rec)).catch(() => {});
+          }
+        }}
+      />
+
+      {/* Phase 5-UX-7: Auto-Check Publish Modal (auto_check kind) */}
+      {state.meta.pipelineId != null && (
+        <AutoCheckPublishModal
+          open={autoCheckModalOpen}
+          onClose={() => setAutoCheckModalOpen(false)}
+          pipelineId={state.meta.pipelineId}
+          pipelineName={state.pipeline.name}
+          pipelineJson={state.pipeline}
+          onPublished={(eventTypes) => {
+            setAutoCheckModalOpen(false);
+            showToast("success", `已綁 ${eventTypes.length} 個 event_type + 發佈`);
+            if (state.meta.pipelineId != null) {
+              getPipeline(state.meta.pipelineId).then((rec) => actions.init(rec)).catch(() => {});
+            }
+          }}
+        />
+      )}
+
+      {/* Phase 4-B0: pipeline inputs editor modal */}
+      <PipelineInputsPanel
+        open={inputsPanelOpen}
+        onClose={() => setInputsPanelOpen(false)}
+      />
+
+      {/* Phase 4-B0: Run dialog — prompts for required inputs */}
+      <PipelineRunDialog
+        open={runDialogOpen}
+        inputs={state.pipeline.inputs ?? []}
+        onCancel={() => setRunDialogOpen(false)}
+        onSubmit={(values) => {
+          setRunDialogOpen(false);
+          void executeWithInputs(values);
+        }}
+      />
+
+      {/* Pipeline Results (alert + multi-chart sequence) */}
+      <PipelineResultsPanel
+        open={resultsPanelOpen}
+        onClose={() => setResultsPanelOpen(false)}
+        summary={runResult?.result_summary ?? null}
+        nodeResults={runResult?.node_results ?? {}}
+      />
+
+      {/* Toast */}
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background:
+              toast.kind === "success" ? "#f6ffed" : toast.kind === "error" ? "#fff1f0" : "#e6f7ff",
+            color:
+              toast.kind === "success" ? "#389e0d" : toast.kind === "error" ? "#cf1322" : "#096dd9",
+            border: `1px solid ${
+              toast.kind === "success" ? "#b7eb8f" : toast.kind === "error" ? "#ffa39e" : "#91d5ff"
+            }`,
+            padding: "8px 18px",
+            borderRadius: 4,
+            fontSize: 13,
+            zIndex: 2000,
+            boxShadow: "0 2px 6px rgba(0,0,0,0.1)",
+          }}
+        >
+          {toast.text}
+        </div>
+      )}
+
+      {/* Ignore selectedNode — only consumed in Inspector */}
+      <span style={{ display: "none" }}>{selectedNode?.id ?? ""}</span>
+    </div>
+  );
+}
+
+function StatusBarItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+      <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.08em", color: "#94A3B8" }}>
+        {label}
+      </span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function btn(variant: "primary" | "ghost" | "success" | "danger", disabled = false): React.CSSProperties {
+  const base: React.CSSProperties = {
+    padding: "4px 12px",
+    fontSize: 12,
+    borderRadius: 3,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+    border: "1px solid transparent",
+    fontWeight: 500,
+    letterSpacing: "0.01em",
+  };
+  switch (variant) {
+    case "primary":
+      return { ...base, background: "#4F46E5", color: "#fff", borderColor: "#4F46E5" };
+    case "success":
+      return { ...base, background: "#16A34A", color: "#fff", borderColor: "#16A34A" };
+    case "danger":
+      return { ...base, background: "#FEF2F2", color: "#B91C1C", borderColor: "#FCA5A5" };
+    case "ghost":
+    default:
+      return { ...base, background: "#fff", color: "#475569", borderColor: "#CBD5E1" };
+  }
+}

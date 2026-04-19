@@ -48,3 +48,11 @@ tsconfig.tsbuildinfo
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
+
+# ── Playwright / E2E artifacts ────────────────────────────────────────────────
+aiops-app/playwright-report/
+aiops-app/test-results/
+aiops-app/playwright/.cache/
+
+# ── Local testing screenshots ────────────────────────────────────────────────
+screenshots/

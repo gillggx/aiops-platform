@@ -21,6 +21,343 @@ from langchain_core.messages import ToolMessage
 logger = logging.getLogger(__name__)
 
 
+async def _execute_build_pipeline(
+    db: Any,
+    tool_input: Dict[str, Any],
+    event_emit: Any = None,
+) -> Dict[str, Any]:
+    """Phase 5: run an LLM-built pb_pipeline via Pipeline Builder's executor.
+
+    Returns the same contract as /api/v1/pipeline-builder/execute so the chat
+    render card can display result_summary (triggered / evidence / charts /
+    data_views) — identical to what the /admin/pipeline-builder "Run Full"
+    button produces.
+
+    Phase 5-UX-5: `event_emit` is a sync callback taking dict events emitted
+    by the executor (pb_run_start / pb_node_start / pb_node_done / pb_run_done).
+    Used to stream per-node progress into the chat SSE channel so the canvas
+    can animate node-by-node.
+    """
+    from app.schemas.pipeline import PipelineJSON
+    from app.services.pipeline_builder.block_registry import BlockRegistry
+    from app.services.pipeline_builder.executor import PipelineExecutor
+    from app.services.pipeline_builder.validator import PipelineValidator
+
+    raw_pipeline = tool_input.get("pipeline_json") or {}
+    inputs_map = tool_input.get("inputs") or {}
+
+    try:
+        pipeline_json = PipelineJSON.model_validate(raw_pipeline)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "validation_error",
+            "error_message": f"pipeline_json failed schema parse: {e}",
+        }
+
+    # Phase 5-UX-5: emit the DAG structure before we validate/run so the
+    # frontend can render grey-pending nodes immediately.
+    if event_emit is not None:
+        try:
+            event_emit({
+                "type": "pb_structure",
+                "pipeline_json": raw_pipeline,
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Load registry (reuse session's DB)
+    registry = BlockRegistry()
+    try:
+        await registry.load_from_db(db)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "error_message": f"BlockRegistry load failed: {e}"}
+
+    # Validate first — return structured errors so LLM can retry
+    validator = PipelineValidator(registry.catalog)
+    errors = validator.validate(pipeline_json)
+    if errors:
+        return {
+            "status": "validation_error",
+            "errors": errors,
+            "error_message": (
+                f"Pipeline validation failed ({len(errors)} error(s)). "
+                "Fix the nodes/edges and call build_pipeline again."
+            ),
+        }
+
+    # Execute — ad-hoc (pipeline_id=None, no telemetry bump)
+    executor = PipelineExecutor(registry)
+    try:
+        result = await executor.execute(
+            pipeline_json,
+            inputs=inputs_map or None,
+            on_event=event_emit,  # Phase 5-UX-5: stream per-node events
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("build_pipeline executor crash")
+        return {"status": "failed", "error_message": f"Executor crashed: {type(e).__name__}: {e}"}
+
+    # Shape result to match dispatcher's expected envelope
+    return {
+        "status": result.get("status", "failed"),
+        "run_id": result.get("run_id"),
+        "node_results": result.get("node_results") or {},
+        "error_message": result.get("error_message"),
+        "result_summary": result.get("result_summary"),
+        # Compact summary for LLM context (avoid dumping full evidence table)
+        "llm_readable_data": _summarize_for_llm(result),
+    }
+
+
+async def _execute_build_pipeline_live(
+    db: Any,
+    tool_input: Dict[str, Any],
+    event_emit: Any = None,
+    chat_session_id: Any = None,
+    chat_user_id: Any = None,
+) -> Dict[str, Any]:
+    """Phase 5-UX-6: Glass Box pipeline build.
+
+    Spawns an agent_builder sub-session and relays its SSE events
+    (chat / operation / error / done) as pb_glass_* events through the
+    chat's SSE channel. The frontend mounts/updates a canvas overlay in
+    real-time while this tool runs.
+
+    Context continuity: if the chat session already has a canvas snapshot
+    (agent_sessions.last_pipeline_json), hydrate the sub-agent with it so
+    follow-up turns ("加一張常態分佈圖") see the existing nodes instead of
+    starting from scratch. Explicit `base_pipeline_id` (DB pipeline) wins
+    over session snapshot.
+
+    Returns to the chat LLM a compact summary once the sub-agent finishes.
+    """
+    from app.services.agent_builder.orchestrator import stream_agent_build
+    from app.services.agent_builder.session import AgentBuilderSession
+    from app.services.agent_builder.registry import get_session_registry
+    from app.services.pipeline_builder.block_registry import BlockRegistry
+    from app.schemas.pipeline import PipelineJSON
+
+    goal = (tool_input.get("goal") or "").strip()
+    notes = (tool_input.get("notes") or "").strip()
+    base_pipeline_id = tool_input.get("base_pipeline_id")
+    if not goal:
+        return {"status": "validation_error", "error_message": "goal is required"}
+    prompt = goal if not notes else f"{goal}\n\n補充 context:\n{notes}"
+
+    # Load block registry (shared with main PipelineExecutor)
+    block_registry = BlockRegistry()
+    try:
+        await block_registry.load_from_db(db)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "error_message": f"BlockRegistry load failed: {e}"}
+
+    # Resolve base pipeline — priority: explicit base_pipeline_id > chat session snapshot
+    base_pipeline: Any = None
+    base_source = "none"
+    if base_pipeline_id is not None:
+        try:
+            from sqlalchemy import select as _select
+            from app.models.pipeline import PipelineModel
+            import json as _json
+            row = (await db.execute(
+                _select(PipelineModel).where(PipelineModel.id == int(base_pipeline_id))
+            )).scalar_one_or_none()
+            if row and row.pipeline_json:
+                base_pipeline = PipelineJSON.model_validate(_json.loads(row.pipeline_json))
+                base_source = f"pipeline#{base_pipeline_id}"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("base_pipeline load failed (ignored): %s", e)
+
+    # Phase 5-UX-6 fix: if no explicit base, carry forward the chat session's
+    # last canvas snapshot so follow-up requests see what the previous build
+    # produced (context continuity).
+    if base_pipeline is None and chat_session_id and chat_user_id:
+        try:
+            from sqlalchemy import select as _select
+            from app.models.agent_session import AgentSessionModel
+            import json as _json
+            sess_row = (await db.execute(
+                _select(AgentSessionModel).where(
+                    AgentSessionModel.session_id == chat_session_id,
+                    AgentSessionModel.user_id == chat_user_id,
+                )
+            )).scalar_one_or_none()
+            if sess_row and sess_row.last_pipeline_json:
+                snap = _json.loads(sess_row.last_pipeline_json)
+                if snap.get("nodes"):
+                    base_pipeline = PipelineJSON.model_validate(snap)
+                    base_source = "session_snapshot"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("session snapshot hydration failed (ignored): %s", e)
+    logger.info("build_pipeline_live base=%s, goal=%r", base_source, goal[:80])
+
+    # Create & register session
+    session = AgentBuilderSession.new(
+        user_prompt=prompt,
+        base_pipeline=base_pipeline,
+        base_pipeline_id=base_pipeline_id,
+    )
+    registry = get_session_registry()
+    registry.start_cleanup()
+    await registry.register(session)
+
+    # Signal frontend to open canvas overlay
+    if event_emit is not None:
+        try:
+            event_emit({
+                "type": "pb_glass_start",
+                "session_id": session.session_id,
+                "goal": goal,
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Relay events
+    op_count = 0
+    last_status: str = "running"
+    try:
+        async for evt in stream_agent_build(session, block_registry):
+            evt_type = evt.type  # chat | operation | error | done | suggestion_card
+            payload: Dict[str, Any] = {"session_id": session.session_id}
+            if evt_type == "chat":
+                payload["type"] = "pb_glass_chat"
+                payload["content"] = (evt.data or {}).get("content", "")
+            elif evt_type == "operation":
+                op_count += 1
+                payload["type"] = "pb_glass_op"
+                payload["op"] = (evt.data or {}).get("op")
+                payload["args"] = (evt.data or {}).get("args") or {}
+                payload["result"] = (evt.data or {}).get("result") or {}
+            elif evt_type == "error":
+                payload["type"] = "pb_glass_error"
+                payload["message"] = (evt.data or {}).get("message", "")
+                payload["hint"] = (evt.data or {}).get("hint")
+                payload["op"] = (evt.data or {}).get("op")
+            elif evt_type == "done":
+                payload["type"] = "pb_glass_done"
+                payload["status"] = (evt.data or {}).get("status", "finished")
+                payload["pipeline_json"] = (evt.data or {}).get("pipeline_json")
+                payload["summary"] = (evt.data or {}).get("summary")
+                last_status = payload["status"]
+            else:
+                continue  # skip suggestion_card + other unknown types
+            if event_emit is not None:
+                try:
+                    event_emit(payload)
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as e:  # noqa: BLE001
+        logger.exception("build_pipeline_live sub-agent crashed")
+        return {"status": "failed", "error_message": f"Sub-agent crashed: {type(e).__name__}: {e}"}
+
+    final_pipeline = session.pipeline_json.model_dump(by_alias=True)
+    return {
+        "status": last_status,
+        "pipeline_json": final_pipeline,
+        "summary": session.summary or f"已建立 pipeline（{len(final_pipeline.get('nodes') or [])} nodes, {op_count} operations）",
+        "node_count": len(final_pipeline.get("nodes") or []),
+        "edge_count": len(final_pipeline.get("edges") or []),
+        "run_status": last_status,
+        "llm_readable_data": {
+            "goal": goal,
+            "final_status": last_status,
+            "nodes_built": len(final_pipeline.get("nodes") or []),
+            "operations_taken": op_count,
+            "summary_for_user": session.summary,
+        },
+    }
+
+
+async def _execute_propose_pipeline_patch(
+    db: Any,
+    tool_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Phase 5-UX-5 Copilot: validate patches + return a proposal envelope.
+
+    Does NOT mutate anything — frontend renders the proposal card and the user
+    clicks 'Apply' to actually touch the canvas.
+
+    Validates:
+      - patches non-empty
+      - each op is one of the allowed verbs
+      - block_id (for insert_*) exists in the registry
+    Returns:
+      {status, patches, reason, errors?} — frontend surfaces to user.
+    """
+    from app.services.pipeline_builder.block_registry import BlockRegistry
+
+    raw_patches = tool_input.get("patches") or []
+    reason = tool_input.get("reason") or ""
+    if not isinstance(raw_patches, list) or not raw_patches:
+        return {"status": "validation_error", "error_message": "patches must be a non-empty list"}
+
+    registry = BlockRegistry()
+    try:
+        await registry.load_from_db(db)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "error_message": f"BlockRegistry load failed: {e}"}
+
+    allowed_ops = {"insert_after", "insert_before", "update_params", "delete_node", "connect_edge"}
+    errors: list[dict[str, Any]] = []
+    for i, p in enumerate(raw_patches):
+        if not isinstance(p, dict):
+            errors.append({"index": i, "message": "patch must be an object"})
+            continue
+        op = p.get("op")
+        if op not in allowed_ops:
+            errors.append({"index": i, "message": f"invalid op '{op}'"})
+            continue
+        if op in ("insert_after", "insert_before"):
+            block_id = p.get("block_id")
+            block_version = p.get("block_version") or "1.0.0"
+            if not block_id:
+                errors.append({"index": i, "message": f"{op} requires block_id"})
+                continue
+            if registry.get_spec(block_id, block_version) is None:
+                errors.append({"index": i, "message": f"block_id '{block_id}@{block_version}' not found"})
+
+    if errors:
+        return {
+            "status": "validation_error",
+            "errors": errors,
+            "error_message": f"{len(errors)} patch(es) failed validation",
+        }
+
+    # Proposal is valid structurally; return for frontend rendering.
+    return {
+        "status": "success",
+        "reason": reason,
+        "patches": raw_patches,
+        "llm_readable_data": {
+            "proposal_submitted": True,
+            "patch_count": len(raw_patches),
+            "ops": [p.get("op") for p in raw_patches],
+            "awaiting_user_approval": True,
+            # Hint to LLM: don't repeat the proposal next turn, wait for user response.
+        },
+    }
+
+
+def _summarize_for_llm(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Condensed result for LLM — skip raw rows, keep key facts."""
+    summary = result.get("result_summary") or {}
+    charts = summary.get("charts") or [] if isinstance(summary, dict) else []
+    data_views = summary.get("data_views") or [] if isinstance(summary, dict) else []
+    return {
+        "triggered": bool(summary.get("triggered")) if isinstance(summary, dict) else False,
+        "evidence_rows": summary.get("evidence_rows", 0) if isinstance(summary, dict) else 0,
+        "evidence_node_id": summary.get("evidence_node_id") if isinstance(summary, dict) else None,
+        "chart_count": len(charts),
+        "chart_titles": [c.get("title") for c in charts][:5],
+        "data_view_count": len(data_views),
+        "data_view_titles": [v.get("title") for v in data_views][:5],
+        "node_status_counts": {
+            s: sum(1 for nr in (result.get("node_results") or {}).values() if nr.get("status") == s)
+            for s in ("success", "failed", "skipped")
+        },
+    }
+
+
 async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     """Execute all tool_calls from the last AIMessage.
 
@@ -30,6 +367,10 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
     base_url = config["configurable"]["base_url"]
     auth_token = config["configurable"]["auth_token"]
     user_id = config["configurable"]["user_id"]
+    # Phase 5-UX-5: optional SSE event sink — agent_chat_router injects a sync
+    # callback here so tool-level lifecycle events (pb_structure / pb_node_*)
+    # can stream out to the chat UI for progressive canvas animation.
+    event_emit = config["configurable"].get("pb_event_emit")
 
     # Import here to avoid circular imports at module level
     from app.services.agent_orchestrator_v2.helpers import (
@@ -71,14 +412,17 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
         preflight_err = await _preflight_validate(db, tool_name, tool_input)
         if preflight_err:
             result = preflight_err
-        elif tool_name == "plan_pipeline":
-            # Run the 4-stage data pipeline (Stage 3~6)
-            from app.services.pipeline_executor import execute_pipeline
-            from app.config import get_settings
-            result = await execute_pipeline(
-                plan=tool_input,
-                db_session=db,
-                sim_url=get_settings().ONTOLOGY_SIM_URL,
+        elif tool_name == "build_pipeline_live":
+            # Phase 5-UX-6: Glass Box pipeline build — spawns agent_builder
+            # sub-agent, streams per-operation events to chat SSE.
+            # Pass chat session context so the sub-agent carries canvas snapshot
+            # across follow-up turns.
+            result = await _execute_build_pipeline_live(
+                db,
+                tool_input,
+                event_emit=event_emit,
+                chat_session_id=state.get("session_id"),
+                chat_user_id=user_id,
             )
         else:
             # Inject flat_data into execute_analysis so sandbox can read it directly
@@ -125,19 +469,40 @@ async def tool_execute_node(state: Dict[str, Any], config: RunnableConfig) -> Di
                     else:
                         result["_data_overview"] = overview
 
-        # Handle plan_pipeline: stash flat_data + pipeline_cards
-        if tool_name == "plan_pipeline" and isinstance(result, dict) and result.get("status") == "success":
-            _flat_data = result.get("flat_data")
-            _flat_meta = result.get("flat_metadata")
-            _ui_cfg = result.get("ui_config")
-            _pipeline_cards = result.get("pipeline_cards", [])
+        # Phase 5-UX-6: build_pipeline_live persists final canvas snapshot to
+        # agent_sessions so /chat/[id] can restore on page reload. No render
+        # card — the overlay already showed everything live.
+        if tool_name == "build_pipeline_live" and isinstance(result, dict) and result.get("status") in {"finished", "success"}:
+            sid = state.get("session_id")
+            if sid:
+                try:
+                    from app.models.agent_session import AgentSessionModel
+                    from sqlalchemy import select as _select
+                    _sess_row = (await db.execute(
+                        _select(AgentSessionModel).where(
+                            AgentSessionModel.session_id == sid,
+                            AgentSessionModel.user_id == user_id,
+                        )
+                    )).scalar_one_or_none()
+                    if _sess_row is not None and result.get("pipeline_json"):
+                        _sess_row.last_pipeline_json = json.dumps(
+                            result.get("pipeline_json"),
+                            ensure_ascii=False,
+                        )
+                        await db.flush()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("session pipeline snapshot writeback failed: %s", e)
 
+        # PR-C: invoke_published_skill also returns a pb pipeline summary
+        if tool_name == "invoke_published_skill" and isinstance(result, dict) and result.get("status") == "success":
             card = {
-                "type": "pipeline",
-                "pipeline_cards": _pipeline_cards,
-                "flat_data": _flat_data,
-                "flat_metadata": _flat_meta,
-                "ui_config": _ui_cfg,
+                "type": "pb_pipeline_published",
+                "slug": result.get("slug"),
+                "skill_name": result.get("skill_name"),
+                "charts": result.get("charts") or [],
+                "triggered": result.get("triggered"),
+                "evidence_rows": result.get("evidence_rows"),
+                "run_id": result.get("run_id"),
             }
             new_render_cards.append(card)
 
