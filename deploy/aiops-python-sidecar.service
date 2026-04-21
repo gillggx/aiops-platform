@@ -8,7 +8,7 @@ Requires=aiops-java-api.service
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/opt/aiops/python_ai_sidecar
+WorkingDirectory=/opt/aiops
 EnvironmentFile=/opt/aiops/python_ai_sidecar/.env
 ExecStart=/opt/aiops/venv_sidecar/bin/uvicorn python_ai_sidecar.main:app \
   --host 127.0.0.1 --port 8050 --workers 1
