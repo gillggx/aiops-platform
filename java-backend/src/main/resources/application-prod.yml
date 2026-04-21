@@ -1,3 +1,17 @@
+spring:
+  jpa:
+    # Phase 5-7 shared-schema reality: Python owns DDL (Alembic), Java reads
+    # the same tables. Python uses INTEGER FK columns; Java entities use Long
+    # which maps to BIGINT. Hibernate's `validate` would complain, but at
+    # runtime PostgreSQL auto-casts INT → BIGINT on read + write, so the
+    # mismatch is validation-time only. Flip back to `validate` in Phase 8+
+    # when Java fully owns the schema (needs a migration that bumps column
+    # types to BIGINT).
+    hibernate:
+      ddl-auto: none
+  flyway:
+    enabled: false
+
 aiops:
   auth:
     mode: oidc

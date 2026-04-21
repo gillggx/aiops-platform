@@ -114,10 +114,28 @@ async def execute(req: ExecuteRequest, caller: CallerContext = ServiceAuth) -> d
 
 @router.post("/validate")
 async def validate(req: ValidateRequest, caller: CallerContext = ServiceAuth) -> dict:
-    nodes = (req.pipeline_json or {}).get("nodes") or []
+    """Dry-run the DAG walker: topo-sort + block lookup without any I/O.
+    Surfaces unknown blocks, cycles, and orphan edges before Frontend
+    commits the pipeline."""
+    try:
+        walk = execute_dag(req.pipeline_json)
+    except Exception as ex:  # noqa: BLE001 — DAGError on cycle, malformed JSON etc.
+        return {
+            "ok": False,
+            "status": "validation_error",
+            "error": str(ex)[:300],
+            "caller_user_id": caller.user_id,
+        }
+    node_results = walk.get("node_results") or {}
+    errors = [
+        {"node_id": nid, "error": r.get("error")}
+        for nid, r in node_results.items() if r.get("status") == "error"
+    ]
     return {
-        "ok": True,
-        "status": "mock_valid",
-        "node_count": len(nodes),
+        "ok": walk.get("status") == "success",
+        "status": walk.get("status"),
+        "node_count": len(node_results),
+        "errors": errors,
+        "terminal_nodes": walk.get("terminal_nodes") or [],
         "caller_user_id": caller.user_id,
     }

@@ -1,5 +1,6 @@
 package com.aiops.api.api.auth;
 
+import com.aiops.api.audit.AuditLogService;
 import com.aiops.api.auth.AuthPrincipal;
 import com.aiops.api.auth.JwtService;
 import com.aiops.api.auth.Role;
@@ -7,8 +8,12 @@ import com.aiops.api.auth.UserAccountService;
 import com.aiops.api.common.ApiException;
 import com.aiops.api.common.ApiResponse;
 import com.aiops.api.config.AiopsProperties;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -21,23 +26,44 @@ public class AuthController {
 	private final UserAccountService userAccountService;
 	private final JwtService jwtService;
 	private final AiopsProperties props;
+	private final AuditLogService auditLogService;
 
 	public AuthController(UserAccountService userAccountService,
 	                      JwtService jwtService,
-	                      AiopsProperties props) {
+	                      AiopsProperties props,
+	                      AuditLogService auditLogService) {
 		this.userAccountService = userAccountService;
 		this.jwtService = jwtService;
 		this.props = props;
+		this.auditLogService = auditLogService;
 	}
 
 	@PostMapping("/login")
 	public ApiResponse<Map<String, Object>> login(@org.springframework.validation.annotation.Validated
-	                                               @RequestBody LoginRequest req) {
+	                                               @RequestBody LoginRequest req,
+	                                               HttpServletRequest servletReq) {
 		if (props.auth().mode() != AiopsProperties.Auth.Mode.local) {
 			throw ApiException.badRequest("local login disabled — server is configured for OIDC");
 		}
-		AuthPrincipal principal = userAccountService.authenticate(req.username(), req.password());
+		AuthPrincipal principal;
+		try {
+			principal = userAccountService.authenticate(req.username(), req.password());
+		} catch (ApiException ex) {
+			// Failed login audit — pin the attempted username so brute-force shows up.
+			auditLogService.record(servletReq, 403, 0L, null, "login failed for " + req.username());
+			throw ex;
+		}
 		String token = jwtService.issue(principal);
+
+		// Seed SecurityContext so AuditInterceptor.afterCompletion sees the real principal
+		// even though /auth/login is permit-all.
+		var auth = new UsernamePasswordAuthenticationToken(
+				principal, null,
+				principal.roles().stream()
+						.map(r -> (org.springframework.security.core.GrantedAuthority) new SimpleGrantedAuthority(r.authority()))
+						.toList());
+		SecurityContextHolder.getContext().setAuthentication(auth);
+
 		return ApiResponse.ok(Map.of(
 				"token_type", "Bearer",
 				"access_token", token,

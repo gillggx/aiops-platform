@@ -81,14 +81,41 @@ def test_pipeline_execute_round_trips_via_java(monkeypatch):
     assert captured["post_calls"][0]["triggeredBy"] == "test"
 
 
-def test_pipeline_validate_mock():
+def test_pipeline_validate_surfaces_unknown_block():
+    """Phase 7 S4: validate runs a real DAG dry-run. Unknown blocks are errors."""
     res = client.post(
         "/internal/pipeline/validate",
         headers=HEADERS,
-        json={"pipeline_json": {"nodes": [{"id": "a"}, {"id": "b"}]}},
+        json={"pipeline_json": {"nodes": [
+            {"id": "a", "block": "nonexistent_block", "params": {}}
+        ], "edges": []}},
     )
     assert res.status_code == 200
-    assert res.json()["node_count"] == 2
+    body = res.json()
+    assert body["ok"] is False
+    assert body["status"] == "error"
+    assert len(body["errors"]) == 1
+    assert body["errors"][0]["node_id"] == "a"
+
+
+def test_pipeline_validate_happy_path():
+    res = client.post(
+        "/internal/pipeline/validate",
+        headers=HEADERS,
+        json={"pipeline_json": {
+            "nodes": [
+                {"id": "a", "block": "load_inline_rows", "params": {"rows": [{"x": 1}]}},
+                {"id": "b", "block": "count_rows", "params": {}},
+            ],
+            "edges": [{"from": "a", "to": "b"}],
+        }},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["status"] == "success"
+    assert body["node_count"] == 2
+    assert body["terminal_nodes"] == ["b"]
 
 
 def test_sandbox_run_mock():
