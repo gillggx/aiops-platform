@@ -47,7 +47,13 @@ def test_pipeline_execute_round_trips_via_java(monkeypatch):
         async def get_pipeline(self, pipeline_id):
             captured["get_calls"].append(pipeline_id)
             return {"id": pipeline_id, "name": "stub-pipe",
-                    "pipelineJson": '{"nodes":[{"id":"a"},{"id":"b"}]}'}
+                    # Real block names so the DAG walker actually runs.
+                    "pipelineJson": (
+                        '{"nodes":['
+                        '{"id":"a","block":"load_inline_rows","params":{"rows":[{"v":1},{"v":2}]}},'
+                        '{"id":"b","block":"count_rows","params":{}}'
+                        '],"edges":[{"from":"a","to":"b"}]}'
+                    )}
 
         async def create_execution_log(self, body):
             captured["post_calls"].append(body)

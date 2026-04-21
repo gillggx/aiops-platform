@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from ..auth import CallerContext, ServiceAuth
 from ..clients.java_client import JavaAPIClient, JavaAPIError
+from ..executor.dag import execute_dag
 
 log = logging.getLogger("python_ai_sidecar.pipeline")
 router = APIRouter(prefix="/internal/pipeline", tags=["pipeline"])
@@ -71,29 +72,27 @@ async def execute(req: ExecuteRequest, caller: CallerContext = ServiceAuth) -> d
 
     started = time.monotonic()
     try:
-        node_count = _node_count(effective)
-        # Phase 5a minimal "executor": record inputs echo + node count.
-        # Phase 5c swaps this for pipeline_executor.py imported from
-        # fastapi_backend_service.
-        node_results = {
-            f"n_{i}": {"status": "success", "rows": 1, "duration_ms": 1}
-            for i in range(max(node_count, 1))
-        }
+        # Phase 5c: run the real DAG walker. Unknown block names surface as
+        # node-level errors (not an exception) so partial results still persist.
+        walk = execute_dag(effective)
         duration_ms = int((time.monotonic() - started) * 1000)
+        status = "success" if walk.get("status") == "success" else "error"
         persisted = await java.create_execution_log({
             "triggeredBy": req.triggered_by or "user",
-            "status": "success",
+            "status": status,
             "llmReadableData": json.dumps({
                 "source": "python_ai_sidecar",
-                "node_count": node_count,
-                "node_results": node_results,
-                "inputs_echo": {k: str(v)[:100] for k, v in (req.inputs or {}).items()},
                 "pipeline_id": req.pipeline_id,
-            }),
+                "node_results": walk.get("node_results") or {},
+                "terminal_nodes": walk.get("terminal_nodes") or [],
+                "preview": walk.get("preview") or [],
+                "inputs_echo": {k: str(v)[:100] for k, v in (req.inputs or {}).items()},
+            }, ensure_ascii=False),
             "durationMs": duration_ms,
+            "errorMessage": walk.get("reason") if walk.get("status") == "validation_error" else None,
         })
         return {
-            "ok": True,
+            "ok": status == "success",
             "execution_log_id": persisted.get("id") if isinstance(persisted, dict) else None,
             "caller_user_id": caller.user_id,
             "pipeline": {
@@ -101,7 +100,9 @@ async def execute(req: ExecuteRequest, caller: CallerContext = ServiceAuth) -> d
                 "name": entity.get("name") if entity else None,
                 "resolved": entity is not None or effective is not None,
             },
-            "node_results": node_results,
+            "status": status,
+            "node_results": walk.get("node_results") or {},
+            "preview": walk.get("preview") or [],
             "duration_ms": duration_ms,
         }
     except JavaAPIError as ex:
