@@ -25,9 +25,11 @@ import java.time.ZoneOffset;
 public class AlarmController {
 
 	private final AlarmRepository repository;
+	private final AlarmEnrichmentService enrichment;
 
-	public AlarmController(AlarmRepository repository) {
+	public AlarmController(AlarmRepository repository, AlarmEnrichmentService enrichment) {
 		this.repository = repository;
+		this.enrichment = enrichment;
 	}
 
 	@GetMapping
@@ -39,14 +41,12 @@ public class AlarmController {
 		int safeSize = Math.min(Math.max(size, 1), 500);
 		var pageable = PageRequest.of(page, safeSize, Sort.by(Sort.Direction.DESC, "createdAt"));
 		Page<AlarmEntity> src = repository.findAll(pageable);
-		java.util.List<AlarmDtos.Summary> items;
-		if (status != null && !status.isBlank()) {
-			items = src.getContent().stream()
-					.filter(a -> status.equalsIgnoreCase(a.getStatus()))
-					.map(AlarmDtos::summaryOf).toList();
-		} else {
-			items = src.getContent().stream().map(AlarmDtos::summaryOf).toList();
-		}
+		java.util.List<AlarmEntity> filtered = (status != null && !status.isBlank())
+				? src.getContent().stream()
+						.filter(a -> status.equalsIgnoreCase(a.getStatus()))
+						.toList()
+				: src.getContent();
+		java.util.List<AlarmDtos.Summary> items = enrichment.enrichSummaries(filtered);
 		if (paginated) {
 			return ApiResponse.ok(new PageResponse<>(src.getTotalElements(), page, safeSize, items));
 		}
@@ -57,7 +57,7 @@ public class AlarmController {
 	@GetMapping("/{id}")
 	public ApiResponse<AlarmDtos.Detail> get(@PathVariable Long id) {
 		AlarmEntity e = repository.findById(id).orElseThrow(() -> ApiException.notFound("alarm"));
-		return ApiResponse.ok(AlarmDtos.detailOf(e));
+		return ApiResponse.ok(enrichment.enrichDetail(e));
 	}
 
 	@PostMapping("/{id}/ack")
@@ -71,7 +71,7 @@ public class AlarmController {
 		e.setStatus("acknowledged");
 		e.setAcknowledgedBy(caller.username());
 		e.setAcknowledgedAt(OffsetDateTime.now(ZoneOffset.UTC));
-		return ApiResponse.ok(AlarmDtos.detailOf(repository.save(e)));
+		return ApiResponse.ok(enrichment.enrichDetail(repository.save(e)));
 	}
 
 	@PostMapping("/{id}/resolve")
@@ -81,6 +81,6 @@ public class AlarmController {
 		AlarmEntity e = repository.findById(id).orElseThrow(() -> ApiException.notFound("alarm"));
 		e.setStatus("resolved");
 		e.setResolvedAt(OffsetDateTime.now(ZoneOffset.UTC));
-		return ApiResponse.ok(AlarmDtos.detailOf(repository.save(e)));
+		return ApiResponse.ok(enrichment.enrichDetail(repository.save(e)));
 	}
 }

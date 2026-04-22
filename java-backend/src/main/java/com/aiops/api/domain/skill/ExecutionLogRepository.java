@@ -14,4 +14,7 @@ public interface ExecutionLogRepository extends JpaRepository<ExecutionLogEntity
 	// Bounded variants — avoid loading 40k+ rows into heap.
 	List<ExecutionLogEntity> findBySkillIdOrderByStartedAtDesc(Long skillId, Pageable pageable);
 	List<ExecutionLogEntity> findByAutoPatrolIdOrderByStartedAtDesc(Long autoPatrolId, Pageable pageable);
+
+	// For alarm enrichment — fetch diagnostic logs (triggered_by like 'alarm:<id>') in bulk.
+	List<ExecutionLogEntity> findByTriggeredByInOrderByStartedAtDesc(java.util.Collection<String> triggeredBy);
 }

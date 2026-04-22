@@ -64,8 +64,10 @@ public class PipelineBuilderController {
 	}
 
 	@GetMapping("/auto-check-rules")
-	public ApiResponse<List<Object>> listAutoCheckRules() {
-		// Currently empty in prod (pipeline_auto_check_triggers = 0 rows)
-		return ApiResponse.ok(List.of());
+	public List<Object> listAutoCheckRules() {
+		// Bare list (matches sibling endpoints + Python shape). The page
+		// calls res.json() straight into `setRows(...)` so a wrapped envelope
+		// would crash rendering.
+		return List.of();
 	}
 }
