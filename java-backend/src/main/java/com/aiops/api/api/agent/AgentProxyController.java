@@ -52,6 +52,29 @@ public class AgentProxyController {
 		return bridgeSse(sidecar.postSse("/internal/agent/chat", req, caller), "chat");
 	}
 
+	// Frontend historically posted to `/chat/stream` with a `prompt` field
+	// (old Python FastAPI shape). Accept both paths and both field names so the
+	// Next.js proxy keeps working post-cutover without a redeploy.
+	@PostMapping(path = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+	public SseEmitter chatStreamCompat(@RequestBody Map<String, Object> body,
+	                                   @AuthenticationPrincipal AuthPrincipal caller) {
+		String message = asString(body.get("message"));
+		if (message == null || message.isBlank()) message = asString(body.get("prompt"));
+		if (message == null || message.isBlank()) {
+			throw new com.aiops.api.common.ApiException(
+					org.springframework.http.HttpStatus.BAD_REQUEST,
+					"validation_error", "message: must not be blank");
+		}
+		String sessionId = asString(body.get("sessionId"));
+		if (sessionId == null || sessionId.isBlank()) sessionId = asString(body.get("session_id"));
+		ChatRequest req = new ChatRequest(message, sessionId);
+		return bridgeSse(sidecar.postSse("/internal/agent/chat", req, caller), "chat");
+	}
+
+	private static String asString(Object v) {
+		return v == null ? null : v.toString();
+	}
+
 	@PostMapping(path = "/build", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public SseEmitter build(@Validated @RequestBody BuildRequest req,
 	                        @AuthenticationPrincipal AuthPrincipal caller) {
